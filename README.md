@@ -4,6 +4,8 @@
 
 Sammie-Roto is designed to be a user-friendly tool for AI assisted rotoscoping (masking) of video clips. It serves as a free alternative to commercial solutions such as Adobe’s Roto Brush or DaVinci Resolve Magic Mask. It is generally less accurate than manual rotoscoping, but can usually give a pretty good result with little effort.
 
+You may also be interested in another similar tool that I created, [Cutie-Roto](https://github.com/Zarxrax/Cutie-Roto). While Cutie-Roto and Sammie-Roto both serve a similar purpose, their internal workings are different, so each one might work better in certain situations.
+
 ### Features
 - Includes 3 segmentation models: Sam 2.1 Large, Sam 2.1 Base+, and EfficientTAM_s_512x512.
 - Easy to use interface allows seeking through the video and clicking to add points.
