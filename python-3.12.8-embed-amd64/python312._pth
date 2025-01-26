@@ -1,0 +1,11 @@
+# python._pth
+#
+# this file was added by PythonEmbed4Win.ps1
+.\Lib\python_zip
+.\DLLs
+.\Lib
+.\Scripts
+..
+.
+.\Lib\site-packages
+
