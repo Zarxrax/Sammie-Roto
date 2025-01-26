@@ -1,5 +1,7 @@
 # Sammie-Roto
 
+![Sammie-Roto screenshot](sammie/sammie_screenshot.webp)
+
 Sammie-Roto is designed to be a user-friendly tool for AI assisted rotoscoping (masking) of video clips. It serves as a free alternative to commercial solutions such as Adobe’s Roto Brush or DaVinci Resolve Magic Mask. It is generally less accurate than manual rotoscoping, but can usually give a pretty good result with little effort.
 
 ### Features
