@@ -124,7 +124,7 @@ def reset_postprocessing():
 # Load settings from json file
 def load_settings():
     default_settings = {
-    "segmentation_model": "sam2large",
+    "segmentation_model": "auto",
     "force_cpu": False,
     "export_fps": 24,
     "holes": 0,
@@ -757,13 +757,18 @@ with gr.Blocks(title='Sammie-Roto') as demo:
         with gr.Accordion(label="Instructions (Click to expand/collapse)", open=False):
             gr.Markdown(
             """
-            Before exporting, make sure you have run \"Track Objects\" under the segmentation page in order to generate masks for every frame.
+            - Before exporting, make sure you have run \"Track Objects\" under the segmentation page in order to generate masks for every frame.
+            - Select the "Matte" export type to export a black and white matte as a high quality MP4 file.
+            - Select the "Alpha" export type to export the masked objects with an alpha channel as a ProRes file.
+            - Select the "Greenscreen" export type to export the masked objects with a solid green background as a high quality MP4 file.
+            - "Smooth Edges" will run the masks through an antialiasing model to smooth out the edges.
+            - The postprocessing options at the bottom of the segmentation page will affect the result, so make sure they are set correctly before exporting.
             """)
         export_fps = gr.Dropdown(choices=[23.976, 24, 29.97, 30], value=str(settings['export_fps']), label="FPS", allow_custom_value=True, interactive=True)
         export_type = gr.Dropdown(choices=["Matte", "Alpha", "Greenscreen"], label="Export Type", interactive=True)
         export_smooth = gr.Checkbox(label="Smooth Edges", value=False, interactive=True)
         export_object = gr.Dropdown(choices=["All"]+get_objects(), label="Export Object", interactive=True)
-        export_btn = gr.Button(value="Export Masks")
+        export_btn = gr.Button(value="Export Video")
         export_status = gr.Textbox(value="", label="Export Status")
         export_download = gr.DownloadButton(label="💾 Download Exported Video", visible=False)
     
