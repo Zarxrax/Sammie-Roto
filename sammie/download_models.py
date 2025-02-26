@@ -8,6 +8,7 @@ _links = [
     ('https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt', '2b30654b6112c42a115563c638d238d9'),
     ('https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt', 'ec7bd7d23d280d5e3cfa45984c02eda5'),
     ('https://huggingface.co/yunyangx/efficient-track-anything/resolve/main/efficienttam_s_512x512.pt', '962e151a9dca3b75d8228a16e5264010'),
+    ('https://github.com/pq-yang/MatAnyone/releases/download/v1.0.0/matanyone.pth', 'a50eeaa149a37509feb45e3d6b06f41d'),
 ]
 
 def download_models():

@@ -10,6 +10,8 @@ import torch
 from collections import namedtuple
 from fractions import Fraction
 from sammie.smooth import run_smoothing_model, prepare_smoothing_model
+from matanyone.inference.inference_core import InferenceCore
+from matanyone.utils.get_default_model import get_matanyone_model
 
 # .........................................................................................
 # Global variables
@@ -17,12 +19,15 @@ from sammie.smooth import run_smoothing_model, prepare_smoothing_model
 temp_dir = "temp"
 frames_dir = os.path.join(temp_dir, "frames")
 mask_dir = os.path.join(temp_dir, "masks")
+matting_dir = os.path.join(temp_dir, "matting")
 settings = None
 edge_smoothing = False
 device = None
-propagated = False
+propagated = False # whether we have propagated the masks
+propagating = False # whether we are currently propagating
 inference_state = None
 predictor = None
+mat_processor = None
 points_list = []
 DataPoint = namedtuple("DataPoint", ["Frame", "ObjectID", "Positive", "X", "Y"])
 PALETTE = [
@@ -68,6 +73,8 @@ def setup_cuda():
 def load_model():
     if device.type == "cuda":
         torch.cuda.empty_cache() #clean up GPU memory in case models get loaded multiple times
+    elif device.type == "mps":
+        torch.mps.empty_cache()
     model_selection = settings.get("segmentation_model")
     if (model_selection == "auto" and device.type == "cpu") or model_selection == "efficient":
         from efficient_track_anything.build_efficienttam import build_efficienttam_video_predictor
@@ -80,16 +87,23 @@ def load_model():
         print("Using SAM2 Base model")
         checkpoint = "./checkpoints/sam2.1_hiera_base_plus.pt"
         model_cfg = "../configs/sam2.1_hiera_b+.yaml"
-        return build_sam2_video_predictor(model_cfg, checkpoint, device=device)
+        return build_sam2_video_predictor(model_cfg, checkpoint, device=device) 
     else:
         from sam2.build_sam import build_sam2_video_predictor
         print("Using SAM2 Large model")
         checkpoint = "./checkpoints/sam2.1_hiera_large.pt"
         model_cfg = "../configs/sam2.1_hiera_l.yaml"
-        return build_sam2_video_predictor(model_cfg, checkpoint, device=device)
+        return build_sam2_video_predictor(model_cfg, checkpoint, device=device) 
+
+def load_matting_model():
+    checkpoint = "./checkpoints/matanyone.pth"
+    matanyone = get_matanyone_model(checkpoint, device=device)
+    print("Loaded MatAnyone model")
+    # init inference processor
+    return InferenceCore(matanyone, cfg=matanyone.cfg)
 
 # Save settings if the user changes the settings
-def change_settings(model_dropdown, cpu_checkbox):
+def change_settings(model_dropdown, matting_quality_dropdown, cpu_checkbox):
     if model_dropdown == "Auto":
         settings["segmentation_model"] = "auto"
     elif model_dropdown == "SAM2.1Large (High Quality)":
@@ -98,6 +112,14 @@ def change_settings(model_dropdown, cpu_checkbox):
         settings["segmentation_model"] = "sam2base"
     elif model_dropdown == "EfficientTAM (Fast)":
         settings["segmentation_model"] = "efficient"
+    if matting_quality_dropdown == "480p":
+        settings["matting_quality"] = 480
+    elif matting_quality_dropdown == "720p":
+        settings["matting_quality"] = 720
+    elif matting_quality_dropdown == "1080p":
+        settings["matting_quality"] = 1080
+    elif matting_quality_dropdown == "Full":
+        settings["matting_quality"] = -1
     if cpu_checkbox:
         settings["force_cpu"] = True
     else:
@@ -125,6 +147,7 @@ def reset_postprocessing():
 def load_settings():
     default_settings = {
     "segmentation_model": "auto",
+    "matting_quality": 720,
     "force_cpu": False,
     "export_fps": 24,
     "holes": 0,
@@ -161,6 +184,17 @@ def set_model_dropdown():
         return "SAM2.1Base+"
     elif settings["segmentation_model"] == "efficient":
         return "EfficientTAM (Fast)"
+    
+# Setup the values for the matting quality dropdown box based on the settings file
+def set_matting_quality_dropdown():
+    if settings["matting_quality"] == 480:
+        return "480p"
+    elif settings["matting_quality"] == 720:
+        return "720p"
+    elif settings["matting_quality"] == 1080:
+        return "1080p"
+    elif settings["matting_quality"] == -1:
+        return "Full"
 
 def set_postprocessing_holes_slider():
     return settings["holes"]
@@ -184,6 +218,7 @@ def process_video(video_file, progress=gr.Progress()):
         shutil.rmtree(temp_dir)
     os.makedirs(frames_dir)
     os.makedirs(mask_dir)
+    os.makedirs(matting_dir)
     
     # Open the video file and initialize frame counter
     progress(0, desc="Extracting Frames...")
@@ -214,7 +249,7 @@ def process_video(video_file, progress=gr.Progress()):
 # Function to call process_video and get the frame count, then set up the slider to use that number of frames, also update the fps in the export tab
 def process_and_enable_slider(video_file):
     frame_count = process_video(video_file)
-    return [gr.Slider(0,frame_count-1, step=1, label="Frame Number"), gr.Dropdown(choices=[23.976, 24, 29.97, 30], value=str(settings['export_fps']), label="FPS", allow_custom_value=True, interactive=True)]
+    return [gr.Slider(minimum=0,maximum=frame_count-1, value=0, step=1, label="Frame Number"), gr.Slider(minimum=0,maximum=frame_count-1, value=0, step=1, label="Frame Number"), gr.Dropdown(choices=[23.976, 24, 29.97, 30], value=str(settings['export_fps']), label="FPS", allow_custom_value=True, interactive=True)]
 
 # Function to modify the value of the frame slider when clicking on the dataframe, also update the displayed object color
 def change_slider(event_data: gr.SelectData):
@@ -244,6 +279,21 @@ def save_json(points_list):
     with open(json_filename, 'w') as f:
         json.dump(points_list, f)
 
+# when the user clicks load points button
+def load_points(json_filename):
+    global points_list
+    if os.path.exists(json_filename):
+        with open(json_filename, 'r') as f:
+            json_data = json.load(f)
+            points_list = [DataPoint(*point) for point in json_data]
+            save_json(points_list)
+    return points_list
+
+# when the user clicks save points button. The file is already defined on the button itself, this function just checks that it exists.
+def save_points():
+    if not os.path.exists(os.path.join(temp_dir, "points.json")):
+        gr.Warning("Please add some points first.")
+
 # Function to update the image based on the slider value
 def update_image(slider_value):
     frame_filename = os.path.join(frames_dir, f"{slider_value:04d}.png")
@@ -259,29 +309,28 @@ def update_image(slider_value):
 
 # Function to record points when clicking on the image
 def add_point(frame_number, object_id, point_type, event_data: gr.SelectData):
-    x, y = event_data.index[0], event_data.index[1]
-    points_list.append(DataPoint(frame_number, object_id, 1 if point_type == "+" else 0, x, y))
-    if propagated:
-        clear_tracking()
-    segment_image(frame_number, object_id)
-    save_json(points_list)
+    if not propagating: # dont allow adding points while propagating
+        x, y = event_data.index[0], event_data.index[1]
+        points_list.append(DataPoint(frame_number, object_id, 1 if point_type == "+" else 0, x, y))
+        if propagated:
+            clear_tracking()
+        segment_image(frame_number, object_id)
+        save_json(points_list)
     return points_list
 
 # Function to run segmentation and save the mask
 def segment_image(frame_number, object_id):
     frame_filename = os.path.join(frames_dir, f"{frame_number:04d}.png")
     if os.path.exists(frame_filename):
-        image = cv2.imread(frame_filename)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        # format the input points and labels and run the prediction
+        # format the input points and labels
         filtered_points = [(point.X, point.Y, point.Positive) for point in points_list if point.Frame == frame_number and point.ObjectID == object_id]
         if filtered_points:
             input_points = np.array([(x, y) for x, y, _ in filtered_points], dtype=np.float32)
             input_labels = np.array([positive for _, _, positive in filtered_points], dtype=np.int32)
         else:
             return
-
+        # run the prediction
         _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box( # returns a list of masks which includes all objects
             inference_state=inference_state,
             frame_idx=frame_number,
@@ -471,23 +520,50 @@ def draw_points(image, frame_number):
             image = cv2.circle(image, (point.X, point.Y), 4, point_color, -1) #filled circle
     return image
 
-def propagate_masks(progress=gr.Progress()):
-    progress(0)
+def lock_ui():
+    return [gr.Button(value="Track Objects", visible=False), gr.Button(value="Cancel", visible=True), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.File(label="Upload Video File", file_types=['video', '.mkv'], interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
+
+def unlock_ui():
+    return [gr.Button(value="Track Objects", visible=True), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=True), gr.Button(value="Clear Object (frame)", interactive=True), gr.Button(value="Clear Object", interactive=True), gr.Button(value="Clear Tracking Data", interactive=True), gr.Button(value="Clear All", interactive=True), gr.File(label="Upload Video File", file_types=['video', '.mkv'], interactive=True), gr.Tab(label="Matting", visible=True), gr.Tab(label="Export", visible=True)]
+
+def lock_ui_matting():
+    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=False), gr.Button(value="Cancel Matting", visible=True), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=False), gr.File(label="Upload Video File", file_types=['video', '.mkv'], interactive=False), gr.Tab(label="Segmentation", visible=False), gr.Tab(label="Export", visible=False)]
+
+def unlock_ui_matting():
+    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=True), gr.Button(value="Cancel Matting", visible=False), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=True), gr.File(label="Upload Video File", file_types=['video', '.mkv'], interactive=True), gr.Tab(label="Segmentation", visible=True), gr.Tab(label="Export", visible=True)]
+
+def propagate_masks():
+    global propagating
+    propagating = True
     frame_count = count_frames()
     predictor.reset_state(inference_state)
     replay_points_sequentially()
     for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=0):
+        if not propagating:
+            break
         for i, out_obj_id in enumerate(out_obj_ids):
             mask_filename = os.path.join(mask_dir, f"{out_frame_idx:04d}", f"{out_obj_id}.png")
             mask = (out_mask_logits[i] > 0.0).cpu().numpy().squeeze()
             mask = (mask * 255).astype(np.uint8) # convert to uint8 before saving to file
             os.makedirs(os.path.dirname(mask_filename), exist_ok=True)
             cv2.imwrite(mask_filename, mask)
-        progress(out_frame_idx/frame_count)
-        #yield update_image(out_frame_idx)
-    global propagated 
-    propagated= True
-    progress(1)
+        if out_frame_idx % 10 == 0: # update preview every 10 frames
+            yield [gr.Slider(minimum=0,maximum=frame_count-1, value=out_frame_idx, step=1, label="Frame Number"), update_image(out_frame_idx)]
+    if not propagating:
+        clear_tracking()
+    else:
+        global propagated 
+        propagated= True
+    propagating = False
+    yield [gr.Slider(minimum=0,maximum=frame_count-1, value=0, step=1, label="Frame Number"), update_image(0)]
+
+def cancel_propagation():
+    global propagating
+    propagating = False
+
+def cancel_matting():
+    global propagating
+    propagating = False
 
 def undo_point():
     if points_list:
@@ -511,6 +587,10 @@ def clear_tracking():
         shutil.rmtree(mask_dir)
     os.makedirs(mask_dir)
     predictor.reset_state(inference_state)
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps":
+        torch.mps.empty_cache()
     global propagated
     if propagated:
         gr.Warning("Tracking data cleared.")
@@ -524,6 +604,10 @@ def clear_all_points():
     os.makedirs(mask_dir)
     save_json(points_list)
     predictor.reset_state(inference_state)
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps":
+        torch.mps.empty_cache()
     global propagated
     propagated = False
     return points_list
@@ -564,25 +648,195 @@ def update_color(object_id):
     color = '#%02x%02x%02x' % PALETTE[object_id % len(PALETTE)] # convert color palette to hex
     return gr.ColorPicker(label="Color", value=color, interactive=False)
 
-def change_smoothing(smoothing_checkbox):
-    global edge_smoothing
-    edge_smoothing = smoothing_checkbox
+
+# set the matting frame slider to the same frame as the segmentation frame slider, and vice versa
+def sync_sliders(frame_number): 
+    frame_count = max(count_frames()-1,0)
+    return gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
+
+# Function to update the matting preview image based on the slider value
+def update_image_mat(slider_value, radio_value):
+    frame_filename = os.path.join(frames_dir, f"{slider_value:04d}.png")
+    image = cv2.imread(frame_filename)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    if radio_value == "Segmentation Mask":
+        if os.path.exists(frame_filename):
+            image = draw_masks(image, slider_value)
+            #image = draw_contours(image, slider_value)
+            #image = draw_points(image, slider_value)
+            return image
+        else:
+            return None
+    else:
+        object_ids = get_objects()
+        if not object_ids:
+            return image
+        combined_mask = np.zeros_like(cv2.cvtColor(image, cv2.COLOR_RGB2GRAY), dtype=np.uint8)  # Initialize combined mask as blank
+        for object_id in object_ids:
+            mask_filename = os.path.join(matting_dir, f"{slider_value:04d}", f"{object_id}.png")
+            if os.path.exists(mask_filename):
+                mask = cv2.imread(mask_filename, cv2.IMREAD_GRAYSCALE)
+                if mask is not None and np.any(mask):  # Ensure mask is not blank
+                    combined_mask = cv2.bitwise_or(combined_mask, mask)          
+        return combined_mask
+
+def resize_image(image):
+    max_size = settings["matting_quality"]
+    if max_size > 0:
+        h, w = image.shape[:2]
+        min_side = min(h, w)
+        if min_side > max_size:
+            scale = max_size / min_side
+            new_h = int(h * scale)
+            new_w = int(w * scale)
+            image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    return image
+
+def restore_image_size(image, original_size):
+    original_h, original_w = original_size
+    restored_image = cv2.resize(image, (original_h, original_w), interpolation=cv2.INTER_LINEAR)
+    return restored_image
+      
+def run_matting(start_frame):
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps":
+        torch.mps.empty_cache()
+    global propagating
+    propagating = True
+    frame_count = count_frames()
+    object_ids = get_objects()
+
+    if os.path.exists(matting_dir):
+        shutil.rmtree(matting_dir)
+    os.makedirs(matting_dir)
+
+    # get list of image paths
+    images = []
+    for frame_number in range(frame_count):
+        image_filename = os.path.join(frames_dir, f"{frame_number:04d}.png")
+        if os.path.exists(image_filename):
+            images.append(image_filename)
+
+    for object_id in object_ids:
+        # load the first-frame mask
+        mask_filename = os.path.join(mask_dir, f"{start_frame:04d}", f"{object_id}.png")
+        if os.path.exists(mask_filename):
+            mask = cv2.imread(mask_filename, cv2.IMREAD_GRAYSCALE)
+        else:   
+            print("Mask not found for object", object_id)
+            gr.Warning("Mask not found for object", object_id)
+            continue
+        if mask is None or not np.any(mask):  # Ensure mask is not blank
+            print("Mask is blank for object", object_id)
+            gr.Warning("Mask is blank for object", object_id)
+            continue
+        _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+        mask = fill_small_holes(mask)
+        mask = remove_small_dots(mask)
+        original_size = mask.shape[1::-1]
+        mask = resize_image(mask) # resize mask to matting quality
+        mask = torch.tensor(mask, dtype=torch.float32, device=device)
+
+
+        # forward loop from start frame
+        if start_frame < frame_count - 1:
+            for frame_number, frame_path in enumerate(images[start_frame:], start=start_frame): 
+                if not propagating:
+                    break
+                img = cv2.imread(frame_path)
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img = resize_image(img) # resize image to matting quality
+                img = torch.tensor(img / 255., dtype=torch.float32, device=device).permute(2, 0, 1)  # Normalize and reorder channels
+
+                with torch.no_grad(): #why do i need no_grad? its not in the original, but without this the vram explodes
+                    if frame_number == start_frame:
+                        output_prob = mat_processor.step(img, mask, objects=[1])      # encode given mask
+                        for i in range(10): # warmup by processing first frame 10 times
+                            output_prob = mat_processor.step(img, first_frame_pred=True)      # first frame for prediction
+                    else:
+                        output_prob = mat_processor.step(img)
+
+                    # convert output probabilities to alpha matte
+                    mat = mat_processor.output_prob_to_mask(output_prob)
+                    mat = mat.detach().cpu().numpy()
+                    mat = (mat*255).astype(np.uint8)
+                    mat = restore_image_size(mat, original_size)
+
+                mat_filename = os.path.join(matting_dir, f"{frame_number:04d}", f"{object_id}.png")
+                os.makedirs(os.path.dirname(mat_filename), exist_ok=True)
+                cv2.imwrite(mat_filename, mat)
+                if frame_number % 10 == 0: # update preview every 10 frames
+                    yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
+
+        # backward loop from start frame
+        if start_frame > 0:
+            for frame_number in range(start_frame, -1, -1): 
+                if not propagating:
+                    break
+                frame_path = images[frame_number]
+                img = cv2.imread(frame_path)
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img = resize_image(img) # resize image to matting quality
+                img = torch.tensor(img / 255., dtype=torch.float32, device=device).permute(2, 0, 1)  # Normalize and reorder channels
+
+                with torch.no_grad(): #why do i need this? its not in the original, but without this the vram explodes
+                    if frame_number == start_frame:
+                        output_prob = mat_processor.step(img, mask, objects=[1])      # encode given mask
+                        for i in range(10): # warmup by processing first frame 10 times
+                            output_prob = mat_processor.step(img, first_frame_pred=True)      # first frame for prediction
+                    else:
+                        output_prob = mat_processor.step(img)
+
+                    # convert output probabilities to alpha matte
+                    mat = mat_processor.output_prob_to_mask(output_prob)
+                    mat = mat.detach().cpu().numpy()
+                    mat = (mat*255).astype(np.uint8)
+                    mat = restore_image_size(mat, original_size)
+
+                mat_filename = os.path.join(matting_dir, f"{frame_number:04d}", f"{object_id}.png")
+                os.makedirs(os.path.dirname(mat_filename), exist_ok=True)
+                cv2.imwrite(mat_filename, mat)
+                if frame_number % 10 == 0: # update preview every 10 frames
+                    yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
+    
+    if not propagating: # if cancelled, delete matting dir
+        if os.path.exists(matting_dir):
+            shutil.rmtree(matting_dir)
+        os.makedirs(matting_dir)
+    propagating = False
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps":
+        torch.mps.empty_cache()
+    yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
 
 def update_export_objects():
     return gr.Dropdown(choices=["All"]+get_objects(), label="Export Object", interactive=True)
 
-def export_video(fps, type, object, progress=gr.Progress()):
+def export_video(fps, type, content, object, progress=gr.Progress()):
     frame_count = count_frames()
-    total_masks = sum([len(files) for root, dirs, files in os.walk(mask_dir)])
+    total_masks = 0
     object_ids = get_objects()
     object_count = len(object_ids)
 
-    if not os.path.exists(mask_dir):
-        gr.Warning("No masks to export. Please run \"Track Objects\" first.")
-        return "No masks to export. Please run \"Track Objects\" first."
-    if frame_count*object_count != total_masks:
-        gr.Warning("Not all frames have masks. Please run \"Track Objects\".")
-        return "Not all frames have masks. Please run \"Track Objects\"."
+    if content == "Matting":
+        if not os.path.exists(matting_dir):
+            gr.Warning("No mattes to export. Please \"Run Matting\" from the Matting tab first.")
+            return "No mattes to export. Please \"Run Matting\" from the Matting tab first."
+        total_masks = sum([len(files) for _, _, files in os.walk(matting_dir)])
+        if frame_count*object_count != total_masks:
+            gr.Warning("Not all frames have mattes. Please \"Run Matting\" from the Matting tab.")
+            return "Not all frames have mattes. Please \"Run Matting\" from the Matting tab."
+    else:
+        if not os.path.exists(mask_dir):
+            gr.Warning("No masks to export. Please run \"Track Objects\" first.")
+            return "No masks to export. Please run \"Track Objects\" first."
+            
+        total_masks = sum([len(files) for _, _, files in os.walk(mask_dir)])
+        if frame_count*object_count != total_masks:
+            gr.Warning("Not all frames have masks. Please run \"Track Objects\".")
+            return "Not all frames have masks. Please run \"Track Objects\"."
 
     images = []
     masks = []
@@ -613,7 +867,7 @@ def export_video(fps, type, object, progress=gr.Progress()):
             fps = Fraction(fps)
             fps = fps.limit_denominator(0x7fffffff)
 
-    if edge_smoothing:
+    if content == "Segmentation with Edge Smoothing":
         smoothing_model = prepare_smoothing_model("./checkpoints/1x_binary_mask_smooth.pth", device)
 
     # Prepare the output file with PyAV
@@ -631,28 +885,34 @@ def export_video(fps, type, object, progress=gr.Progress()):
     for frame_number, frame_path in enumerate(images):
         img = None
         mask = None
-        mask_folder = os.path.join(mask_dir, f"{frame_number:04d}")
+        if content == "Matting":
+            mask_folder = os.path.join(matting_dir, f"{frame_number:04d}")
+        else:
+            mask_folder = os.path.join(mask_dir, f"{frame_number:04d}")
         if object == "All":
             masks = [os.path.join(mask_folder, f"{object_id}.png") for object_id in object_ids]
             mask = cv2.imread(masks[0], cv2.IMREAD_GRAYSCALE)
-            _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-            mask = fill_small_holes(mask)
-            mask = remove_small_dots(mask)
+            if content != "Matting":
+                _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+                mask = fill_small_holes(mask)
+                mask = remove_small_dots(mask)
             for file_path in masks[1:]:
                 current_mask = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
-                _, current_mask = cv2.threshold(current_mask, 127, 255, cv2.THRESH_BINARY)
-                current_mask = fill_small_holes(current_mask)
-                current_mask = remove_small_dots(current_mask)
+                if content != "Matting":
+                    _, current_mask = cv2.threshold(current_mask, 127, 255, cv2.THRESH_BINARY)
+                    current_mask = fill_small_holes(current_mask)
+                    current_mask = remove_small_dots(current_mask)
                 mask = cv2.bitwise_or(mask, current_mask)
             mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
         else:
             mask_filename = os.path.join(mask_dir, f"{frame_number:04d}", f"{object}.png")
             mask = cv2.imread(mask_filename, cv2.IMREAD_GRAYSCALE)
-            _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-            mask = fill_small_holes(mask)
-            mask = remove_small_dots(mask)
+            if content != "Matting":
+                _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+                mask = fill_small_holes(mask)
+                mask = remove_small_dots(mask)
             mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-        if edge_smoothing:
+        if content == "Segmentation with Edge Smoothing":
             mask = run_smoothing_model(mask, smoothing_model, device)
         if type=="Alpha": 
             img = cv2.imread(frame_path)
@@ -693,6 +953,8 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     device = setup_cuda()
     predictor = load_model()
     frame_count = max(count_frames()-1,0)
+    mat_processor = load_matting_model()
+    save_settings() # save settings in case defaults have not been saved yet
 
     # resume previous session
     if os.path.exists(temp_dir):
@@ -707,11 +969,20 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             clear_tracking() # remove any tracking data from previous session and replay the points
 
     # Define the Gradio components
-    with gr.Tab("Segmentation"):
+    with gr.Sidebar():
+        gr.Markdown("### Input Video / Settings")
+        video_input = gr.File(label="Upload Video File", file_types=['video', '.mkv'])
+        model_dropdown = gr.Dropdown(choices=["Auto", "SAM2.1Large (High Quality)", "SAM2.1Base+", "EfficientTAM (Fast)"], value=set_model_dropdown(), label="Segmentation Model", interactive=True)
+        matting_quality_dropdown = gr.Dropdown(choices=["480p", "720p", "1080p", "Full"], value=set_matting_quality_dropdown(), label="Matting Max Internal Size", interactive=True)
+        cpu_checkbox = gr.Checkbox(label="Force Processing on CPU", value=settings["force_cpu"], interactive=True)
+        load_points_btn = gr.UploadButton(label="Load points from file", file_types=['.json'], interactive=True)
+        save_points_btn = gr.DownloadButton(label="Save points to file", value=os.path.join(temp_dir, "points.json"), interactive=True)
+
+    with gr.Tab("Segmentation") as segmentation_tab:
         with gr.Accordion(label="Instructions (Click to expand/collapse)", open=False):
             gr.Markdown(
             """
-            - Before starting, you need a short video that has been trimmed to a single scene. Load a video file, then the frames will be extracted, and the video will be loaded into the viewer.
+            - Before starting, you need a short video that has been trimmed to a single scene. You can find some sample videos in the "examples" folder. The video can be loaded using the sidebar to the left.
             - You can drag the slider to seek through the frames, and click to add points.
             - You can track multiple different objects at the same time by changing the object id. Note that each additional object will cause tracking to be slower.
             - Press the \"Track Objects\" button to track the mask across all frames of the video.
@@ -719,12 +990,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             - The sliders at the bottom can be used to make adjustments to the masks.
             - When you are satisfied with the result, move to the Export tab at the top to render the video.
             """)
-        with gr.Accordion(label="Input Video / Settings", open=False):
-            with gr.Row():
-                video_input = gr.File(label="Upload Video File", file_types=['video', '.mkv'])
-                with gr.Column():
-                    model_dropdown = gr.Dropdown(choices=["Auto", "SAM2.1Large (High Quality)", "SAM2.1Base+", "EfficientTAM (Fast)"], value=set_model_dropdown(), label="Segmentation Model", interactive=True)
-                    cpu_checkbox = gr.Checkbox(label="Force Processing on CPU", value=settings["force_cpu"], interactive=True)
+        
         image_viewer = gr.Image(label="Frame Viewer", interactive=False, show_download_button=False, show_label=False)
         frame_slider = gr.Slider(0, frame_count, step=1, label="Frame Number")
         with gr.Row():
@@ -740,6 +1006,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
                     clear_all_points_obj_btn = gr.Button(value="Clear Object")
                 with gr.Row():
                     propagate_btn = gr.Button(value="Track Objects")
+                    cancel_propagate_btn = gr.Button(value="Cancel", visible=False)
                     clear_tracking_btn = gr.Button(value="Clear Tracking Data")
                     clear_all_points_btn = gr.Button(value="Clear All")
         with gr.Row():
@@ -748,34 +1015,53 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             post_grow_slider = gr.Slider(minimum=-10, maximum=10, value=set_postprocessing_grow_slider(), step=1, label="Shrink/Grow")
             show_outlines_checkbox = gr.Checkbox(label="Show Outlines", value=set_show_outlines(), interactive=True)
         with gr.Accordion(label="Point List", open=False):
-            point_viewer = gr.List(
+            point_viewer = gr.Dataframe(
                     headers=["Frame", "ObjectID", "Positive", "X", "Y"],
                     datatype=["number", "number", "number", "number", "number"],
                     value=points_list,
                     col_count=5)
+    with gr.Tab("Matting") as matting_tab:
+        with gr.Accordion(label="Instructions (Click to expand/collapse)", open=False):
+            gr.Markdown(
+            """
+            - Matting works well for objects with soft or poorly defined edges, such as hair or fur.
+            - Matting requires you to first create a mask on at least one frame in the segmentation tab.
+            - Set the frame slider below to display the frame that you want to use as the input for the matting model. (The frame must contain a mask)
+            - Click the \"Run Matting\" button to run matting across the entire video.
+            - If you are satisfied with the result, move to the Export tab to render the video. You can sometimes get better results by trying from a different starting frame.
+            """)
+        image_viewer_mat = gr.Image(label="Frame Viewer", interactive=False, show_download_button=False, show_label=False)
+        frame_slider_mat = gr.Slider(0, frame_count, step=1, label="Frame Number")
+        viewer_output_radio = gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Segmentation Mask", interactive=True)
+        matting_btn = gr.Button(value="Run Matting (based on segmentation mask of selected frame)")
+        cancel_matting_btn = gr.Button(value="Cancel Matting", visible=False)
+
+
     with gr.Tab("Export") as export_tab:
         with gr.Accordion(label="Instructions (Click to expand/collapse)", open=False):
             gr.Markdown(
             """
-            - Before exporting, make sure you have run \"Track Objects\" under the segmentation page in order to generate masks for every frame.
-            - Select the "Matte" export type to export a black and white matte as a high quality MP4 file.
-            - Select the "Alpha" export type to export the masked objects with an alpha channel as a ProRes file.
-            - Select the "Greenscreen" export type to export the masked objects with a solid green background as a high quality MP4 file.
-            - "Smooth Edges" will run the masks through an antialiasing model to smooth out the edges.
-            - The postprocessing options at the bottom of the segmentation page will affect the result, so make sure they are set correctly before exporting.
+            - Before exporting, make sure you have run \"Track Objects\" under the segmentation page in order to generate masks for every frame, or if you want to export the matting result, make sure you have \"Run Matting\" under the matting page.
+            - Three export types are available: "Matte" exports a black and white matte. "Alpha" exports the masked objects with an alpha channel. "Greenscreen" exports the masked objects with a solid green background. "Matte" and "Greenscreen" will export a high quality MP4 file, while "Alpha" will export a ProRes file.
+            - Export content options include "Segmentation Mask", "Segmentation with Edge Smoothing", and "Matting". The edge smoothing option will run the segmentation masks through an antialiasing model to smooth out the edges.
+            - The postprocessing options at the bottom of the segmentation page will affect the result when exporting segmentation masks, so make sure they are set correctly before exporting.
+            - Export object options include "All" to export all objects combined into a single video, or you can select a specific object ID to export.
             """)
         export_fps = gr.Dropdown(choices=[23.976, 24, 29.97, 30], value=str(settings['export_fps']), label="FPS", allow_custom_value=True, interactive=True)
         export_type = gr.Dropdown(choices=["Matte", "Alpha", "Greenscreen"], label="Export Type", interactive=True)
-        export_smooth = gr.Checkbox(label="Smooth Edges", value=False, interactive=True)
+        export_content = gr.Dropdown(choices=["Segmentation Mask", "Segmentation with Edge Smoothing", "Matting"], label="Export Content", interactive=True)
         export_object = gr.Dropdown(choices=["All"]+get_objects(), label="Export Object", interactive=True)
         export_btn = gr.Button(value="Export Video")
         export_status = gr.Textbox(value="", label="Export Status")
         export_download = gr.DownloadButton(label="💾 Download Exported Video", visible=False)
     
     # Define the event listeners
-    video_input.upload(process_and_enable_slider, inputs=video_input, outputs=[frame_slider, export_fps]).then(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer).then(reset_postprocessing, outputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox])
-    model_dropdown.input(change_settings, inputs=[model_dropdown, cpu_checkbox])
-    cpu_checkbox.input(change_settings, inputs=[model_dropdown, cpu_checkbox])
+    video_input.upload(process_and_enable_slider, inputs=video_input, outputs=[frame_slider, frame_slider_mat, export_fps]).then(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer).then(reset_postprocessing, outputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox])
+    model_dropdown.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
+    matting_quality_dropdown.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
+    cpu_checkbox.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
+    load_points_btn.upload(load_points, inputs=load_points_btn, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
+    save_points_btn.click(save_points)
     post_holes_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider,show_outlines_checkbox]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
     post_dots_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
     post_grow_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
@@ -788,11 +1074,17 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     clear_all_points_btn.click(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
     clear_points_obj_btn.click(clear_points_obj, inputs=[frame_slider, object_id], outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
     clear_all_points_obj_btn.click(clear_all_points_obj, inputs=object_id, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
-    propagate_btn.click(propagate_masks, outputs=[frame_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer)
+    propagate_btn.click(lock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, video_input, matting_tab, export_tab]).then(propagate_masks, outputs=[frame_slider, image_viewer]).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, video_input, matting_tab, export_tab])
+    cancel_propagate_btn.click(cancel_propagation)
     point_viewer.select(change_slider, outputs=[frame_slider, color_picker], show_progress='hidden')
-    export_btn.click(export_video, inputs=[export_fps, export_type, export_object], outputs=[export_status, export_download])
-    export_smooth.change(change_smoothing, inputs=[export_smooth])
+    export_btn.click(export_video, inputs=[export_fps, export_type, export_content, export_object], outputs=[export_status, export_download])
     export_tab.select(update_export_objects, outputs=export_object)
+    segmentation_tab.select(sync_sliders, inputs=[frame_slider_mat], outputs=[frame_slider])
+    matting_tab.select(sync_sliders, inputs=[frame_slider], outputs=[frame_slider_mat]).then(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
+    frame_slider_mat.change(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
+    viewer_output_radio.change(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
+    matting_btn.click(lock_ui_matting, outputs=[matting_btn, cancel_matting_btn, viewer_output_radio, video_input, segmentation_tab, export_tab]).then(run_matting, inputs=frame_slider_mat, outputs=frame_slider_mat).then(unlock_ui_matting, outputs=[matting_btn, cancel_matting_btn, viewer_output_radio, video_input, segmentation_tab, export_tab])
+    cancel_matting_btn.click(cancel_matting)
 
     # when the app loads, update the image
     demo.load(fn=update_image, inputs=frame_slider, outputs=image_viewer)
