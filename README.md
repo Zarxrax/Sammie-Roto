@@ -1,5 +1,6 @@
 
 # Sammie-Roto
+**S**egment **A**nything **M**odel with **M**atting **I**ntegrated **E**legantly
 
 ![Sammie-Roto screenshot](sammie/sammie_screenshot.webp)
 
