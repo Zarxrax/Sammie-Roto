@@ -12,8 +12,6 @@ You may also be interested in another similar tool that I created, [Cutie-Roto](
 - [02/26/2025] Added human video matting support though [MatAnyone](https://github.com/pq-yang/MatAnyone), along with many other improvements.
 - [01/26/2025] Initial release
 
-You may also be interested in another similar tool that I created, [Cutie-Roto](https://github.com/Zarxrax/Cutie-Roto). While Cutie-Roto and Sammie-Roto both serve a similar purpose, their internal workings are different, so each one might work better in certain situations.
-
 ### Features
 - One-click installer for Windows users.
 - Can run on as little as 4GB VRAM or even on CPU (but 6GB Nvidia GPU is recommended)
