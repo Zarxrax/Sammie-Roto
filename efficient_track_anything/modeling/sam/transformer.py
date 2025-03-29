@@ -242,6 +242,11 @@ class Attention(nn.Module):
         v = self._separate_heads(v, self.num_heads)
 
         dropout_p = self.dropout_p if self.training else 0.0
+        if q.dtype != k.dtype:
+            k = k.to(dtype=q.dtype)
+        if q.dtype != v.dtype:
+            v = v.to(dtype=q.dtype)
+            
         # Attention
         out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
@@ -305,6 +310,11 @@ class RoPEAttention(Attention):
         )
 
         dropout_p = self.dropout_p if self.training else 0.0
+        if q.dtype != k.dtype:
+            k = k.to(dtype=q.dtype)
+        if q.dtype != v.dtype:
+            v = v.to(dtype=q.dtype)
+            
         # Attention
         out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
