@@ -9,6 +9,7 @@ Sammie-Roto is designed to be a user-friendly tool for AI assisted masking of vi
 You may also be interested in another similar tool that I created, [Cutie-Roto](https://github.com/Zarxrax/Cutie-Roto). While Cutie-Roto and Sammie-Roto both serve a similar purpose, their internal workings are different, so each one might work better in certain situations.
 
 ### Updates
+- [04/04/2025] Added some adjustment sliders to the Matting page.
 - [02/26/2025] Added human video matting support though [MatAnyone](https://github.com/pq-yang/MatAnyone), along with many other improvements.
 - [01/26/2025] Initial release
 
