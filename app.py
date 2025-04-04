@@ -43,7 +43,7 @@ PALETTE = [
 
 # Set up CUDA if available
 def setup_cuda():
-    print("Sammie-Roto version 1.0")
+    print("Sammie-Roto version 1.2")
     # if using Apple MPS, fall back to CPU for unsupported ops
     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
     print("PyTorch version:", torch.__version__)
@@ -82,7 +82,7 @@ def load_model():
         checkpoint = "./checkpoints/efficienttam_s_512x512.pt"
         model_cfg = "../configs/efficienttam_s_512x512.yaml"
         return build_efficienttam_video_predictor(model_cfg, checkpoint, device=device)
-    elif (model_selection == "auto" and torch.cuda.get_device_properties(0).major < 8) or model_selection == "sam2base":
+    if model_selection == "sam2base" or (model_selection == "auto" and torch.cuda.is_available() and torch.cuda.get_device_properties(0).major < 8):
         from sam2.build_sam import build_sam2_video_predictor
         print("Using SAM2 Base model")
         checkpoint = "./checkpoints/sam2.1_hiera_base_plus.pt"
@@ -128,20 +128,24 @@ def change_settings(model_dropdown, matting_quality_dropdown, cpu_checkbox):
     gr.Info("You must restart the application for changes to take effect.")
 
 # Save settings if user changes the postprocessing settings
-def change_postprocessing(post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox):
+def change_postprocessing(post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider):
     settings["holes"] = post_holes_slider
     settings["dots"] = post_dots_slider
     settings["grow"] = post_grow_slider
     settings["show_outlines"] = show_outlines_checkbox
+    settings["gamma"] = post_gamma_slider
+    settings["grow_matte"] = post_grow_matte_slider
     save_settings()
 
 def reset_postprocessing():
     settings["holes"] = 0
     settings["dots"] = 0
     settings["grow"] = 0
+    settings["gamma"] = 1
+    settings["grow_matte"] = 0
     settings["show_outlines"] = True
     save_settings()
-    return [gr.Slider(minimum=0, maximum=50, value=0, step=1, label="Remove Holes"), gr.Slider(minimum=0, maximum=50, value=0, step=1, label="Remove Dots"), gr.Slider(minimum=-10, maximum=10, value=0, step=1, label="Shrink/Grow"), gr.Checkbox(label="Show Outlines", value=True, interactive=True)]
+    return [gr.Slider(minimum=0, maximum=50, value=0, step=1, label="Remove Holes"), gr.Slider(minimum=0, maximum=50, value=0, step=1, label="Remove Dots"), gr.Slider(minimum=-10, maximum=10, value=0, step=1, label="Shrink/Grow"), gr.Checkbox(label="Show Outlines", value=True, interactive=True), gr.Slider(minimum=0.01, maximum=10, value=1, step=0.01, label="Gamma"), gr.Slider(minimum=-10, maximum=10, value=0, step=1, label="Shrink/Grow")]
 
 # Load settings from json file
 def load_settings():
@@ -153,6 +157,8 @@ def load_settings():
     "holes": 0,
     "dots": 0,
     "grow": 0,
+    "gamma": 0,
+    "grow_matte": 0,
     "show_outlines": True
     }
     try:
@@ -205,6 +211,12 @@ def set_postprocessing_dots_slider():
 def set_postprocessing_grow_slider():
     return settings["grow"]
 
+def set_postprocessing_gamma_slider():
+    return settings["gamma"]
+
+def set_postprocessing_grow_matte_slider():
+    return settings["grow_matte"]
+
 def set_show_outlines():
     return settings["show_outlines"]
 
@@ -254,8 +266,8 @@ def process_and_enable_slider(video_file):
 # Function to modify the value of the frame slider when clicking on the dataframe, also update the displayed object color
 def change_slider(event_data: gr.SelectData):
     color = '#%02x%02x%02x' % PALETTE[event_data.row_value[1] % len(PALETTE)] # convert color palette to hex
-    return event_data.row_value[0], gr.ColorPicker(label="Object Color", value=color, interactive=False)
-        
+    return event_data.row_value[0], gr.Number(label="Object ID", value=event_data.row_value[1], minimum=0, maximum=20, step=1, interactive=True, min_width=100), gr.ColorPicker(label="Object Color", value=color, interactive=False, min_width=100)
+
 # Function to count the number of frames, used when launching the application to resume previous work
 def count_frames():
     if not os.path.exists(frames_dir):
@@ -646,7 +658,7 @@ def clear_all_points_obj(object_id):
 # Change the color displayed in the interface to indicate the current object
 def update_color(object_id):
     color = '#%02x%02x%02x' % PALETTE[object_id % len(PALETTE)] # convert color palette to hex
-    return gr.ColorPicker(label="Color", value=color, interactive=False)
+    return gr.ColorPicker(label="Object Color", value=color, interactive=False, min_width=100)
 
 
 # set the matting frame slider to the same frame as the segmentation frame slider, and vice versa
@@ -676,9 +688,30 @@ def update_image_mat(slider_value, radio_value):
             mask_filename = os.path.join(matting_dir, f"{slider_value:04d}", f"{object_id}.png")
             if os.path.exists(mask_filename):
                 mask = cv2.imread(mask_filename, cv2.IMREAD_GRAYSCALE)
+                mask = grow_shrink_matte(mask)
+                mask = gamma(mask)
                 if mask is not None and np.any(mask):  # Ensure mask is not blank
-                    combined_mask = cv2.bitwise_or(combined_mask, mask)          
+                    combined_mask = cv2.bitwise_or(combined_mask, mask)
         return combined_mask
+
+# Mask postprocessing - grow/shrink
+def grow_shrink_matte(matte):
+    grow_value = settings["grow_matte"]
+    kernel = np.ones((abs(grow_value)+1, abs(grow_value)+1), np.uint8)
+    if grow_value > 0:
+        return cv2.dilate(matte, kernel, iterations=1)
+    elif grow_value < 0:
+        return cv2.erode(matte, kernel, iterations=1)
+    else:
+        return matte
+
+def gamma(matte):
+    gamma_value = settings["gamma"]
+    # build a lookup table mapping the pixel values [0, 255] to their adjusted gamma values
+    invGamma = 1.0 / gamma_value
+    table = np.array([((i / 255.0) ** invGamma) * 255 for i in range(256)]).astype("uint8")
+    # apply gamma correction using the lookup table
+    return cv2.LUT(matte, table)
 
 def resize_image(image):
     max_size = settings["matting_quality"]
@@ -754,6 +787,7 @@ def run_matting(start_frame):
                         output_prob = mat_processor.step(img, mask, objects=[1])      # encode given mask
                         for i in range(10): # warmup by processing first frame 10 times
                             output_prob = mat_processor.step(img, first_frame_pred=True)      # first frame for prediction
+                        yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
                     else:
                         output_prob = mat_processor.step(img)
 
@@ -896,12 +930,20 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
                 _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
                 mask = fill_small_holes(mask)
                 mask = remove_small_dots(mask)
+                mask = grow_shrink(mask)
+            if content == "Matting":
+                mask = gamma(mask)
+                mask = grow_shrink_matte(mask)
             for file_path in masks[1:]:
                 current_mask = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
                 if content != "Matting":
                     _, current_mask = cv2.threshold(current_mask, 127, 255, cv2.THRESH_BINARY)
                     current_mask = fill_small_holes(current_mask)
                     current_mask = remove_small_dots(current_mask)
+                    current_mask = grow_shrink(mask)
+                if content == "Matting":
+                    current_mask = gamma(current_mask)
+                    current_mask = grow_shrink_matte(current_mask)
                 mask = cv2.bitwise_or(mask, current_mask)
             mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
         else:
@@ -911,6 +953,10 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
                 _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
                 mask = fill_small_holes(mask)
                 mask = remove_small_dots(mask)
+                mask = grow_shrink(mask)
+            if content == "Matting":
+                mask = gamma(mask)
+                mask = grow_shrink_matte(mask)
             mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
         if content == "Segmentation with Edge Smoothing":
             mask = run_smoothing_model(mask, smoothing_model, device)
@@ -967,6 +1013,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             print("Resuming previous session...")
             inference_state = predictor.init_state(video_path=frames_dir, async_loading_frames=True, offload_video_to_cpu=True)
             clear_tracking() # remove any tracking data from previous session and replay the points
+    print("Ready.")
 
     # Define the Gradio components
     with gr.Sidebar():
@@ -996,8 +1043,8 @@ with gr.Blocks(title='Sammie-Roto') as demo:
         with gr.Row():
             with gr.Column(scale=2):
                 with gr.Row():
-                    object_id = gr.Number(label="Object ID", value=0, minimum=0, maximum=20, step=1, interactive=True, scale=0)
-                    color_picker = gr.ColorPicker(label="Object Color", value="#800000", interactive=False, scale=0)
+                    object_id = gr.Number(label="Object ID", value=0, minimum=0, maximum=20, step=1, interactive=True, min_width=100)
+                    color_picker = gr.ColorPicker(label="Object Color", value="#800000", interactive=False, min_width=100)
                     point_type = gr.Radio(["+", "-"], label="Point Type", value="+", interactive=True)
             with gr.Column(scale=3):
                 with gr.Row():
@@ -1027,14 +1074,18 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             - Matting works well for objects with soft or poorly defined edges, such as hair or fur.
             - Matting requires you to first create a mask on at least one frame in the segmentation tab.
             - Set the frame slider below to display the frame that you want to use as the input for the matting model. (The frame must contain a mask)
-            - Click the \"Run Matting\" button to run matting across the entire video.
-            - If you are satisfied with the result, move to the Export tab to render the video. You can sometimes get better results by trying from a different starting frame.
+            - Click the \"Run Matting\" button to run matting across the entire video. You can sometimes get better results by trying from a different starting frame.
+            - The sliders at the bottom can be used to make adjustments to the matting result.
+            - If you are satisfied with the result, move to the Export tab to render the video.
             """)
         image_viewer_mat = gr.Image(label="Frame Viewer", interactive=False, show_download_button=False, show_label=False)
         frame_slider_mat = gr.Slider(0, frame_count, step=1, label="Frame Number")
         viewer_output_radio = gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Segmentation Mask", interactive=True)
         matting_btn = gr.Button(value="Run Matting (based on segmentation mask of selected frame)")
         cancel_matting_btn = gr.Button(value="Cancel Matting", visible=False)
+        with gr.Row():
+            post_gamma_slider = gr.Slider(minimum=0.01, maximum=10, value=set_postprocessing_gamma_slider(), step=0.01, label="Gamma")
+            post_grow_matte_slider = gr.Slider(minimum=-10, maximum=10, value=set_postprocessing_grow_matte_slider(), step=1, label="Shrink/Grow")
 
 
     with gr.Tab("Export") as export_tab:
@@ -1044,7 +1095,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             - Before exporting, make sure you have run \"Track Objects\" under the segmentation page in order to generate masks for every frame, or if you want to export the matting result, make sure you have \"Run Matting\" under the matting page.
             - Three export types are available: "Matte" exports a black and white matte. "Alpha" exports the masked objects with an alpha channel. "Greenscreen" exports the masked objects with a solid green background. "Matte" and "Greenscreen" will export a high quality MP4 file, while "Alpha" will export a ProRes file.
             - Export content options include "Segmentation Mask", "Segmentation with Edge Smoothing", and "Matting". The edge smoothing option will run the segmentation masks through an antialiasing model to smooth out the edges.
-            - The postprocessing options at the bottom of the segmentation page will affect the result when exporting segmentation masks, so make sure they are set correctly before exporting.
+            - The postprocessing options at the bottom of the segmentation page or the matting page will affect the result, so make sure they are set correctly before exporting.
             - Export object options include "All" to export all objects combined into a single video, or you can select a specific object ID to export.
             """)
         export_fps = gr.Dropdown(choices=[23.976, 24, 29.97, 30], value=str(settings['export_fps']), label="FPS", allow_custom_value=True, interactive=True)
@@ -1056,16 +1107,18 @@ with gr.Blocks(title='Sammie-Roto') as demo:
         export_download = gr.DownloadButton(label="💾 Download Exported Video", visible=False)
     
     # Define the event listeners
-    video_input.upload(process_and_enable_slider, inputs=video_input, outputs=[frame_slider, frame_slider_mat, export_fps]).then(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer).then(reset_postprocessing, outputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox])
+    video_input.upload(process_and_enable_slider, inputs=video_input, outputs=[frame_slider, frame_slider_mat, export_fps]).then(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer).then(reset_postprocessing, outputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider])
     model_dropdown.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
     matting_quality_dropdown.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
     cpu_checkbox.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
     load_points_btn.upload(load_points, inputs=load_points_btn, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
     save_points_btn.click(save_points)
-    post_holes_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider,show_outlines_checkbox]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
-    post_dots_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
-    post_grow_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
-    show_outlines_checkbox.change(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
+    post_holes_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
+    post_dots_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
+    post_grow_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
+    show_outlines_checkbox.change(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
+    post_gamma_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
+    post_grow_matte_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
     frame_slider.change(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
     image_viewer.select(add_point, inputs=[frame_slider, object_id, point_type], outputs=point_viewer, show_progress='hidden').then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
     object_id.change(update_color, inputs=object_id, outputs=color_picker, show_progress='hidden')
@@ -1076,7 +1129,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     clear_all_points_obj_btn.click(clear_all_points_obj, inputs=object_id, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
     propagate_btn.click(lock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, video_input, matting_tab, export_tab]).then(propagate_masks, outputs=[frame_slider, image_viewer]).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, video_input, matting_tab, export_tab])
     cancel_propagate_btn.click(cancel_propagation)
-    point_viewer.select(change_slider, outputs=[frame_slider, color_picker], show_progress='hidden')
+    point_viewer.select(change_slider, outputs=[frame_slider, object_id, color_picker], show_progress='hidden')
     export_btn.click(export_video, inputs=[export_fps, export_type, export_content, export_object], outputs=[export_status, export_download])
     export_tab.select(update_export_objects, outputs=export_object)
     segmentation_tab.select(sync_sliders, inputs=[frame_slider_mat], outputs=[frame_slider])
@@ -1091,4 +1144,4 @@ with gr.Blocks(title='Sammie-Roto') as demo:
 
 # Launch the Gradio app
 if __name__ == "__main__":
-    demo.launch(show_error=True, inbrowser=True, show_api=False, debug=True)
+    demo.launch(show_error=True, inbrowser=True, show_api=False, debug=False)
