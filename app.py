@@ -771,18 +771,17 @@ def run_matting(start_frame):
         mask = resize_image(mask) # resize mask to matting quality
         mask = torch.tensor(mask, dtype=torch.float32, device=device)
 
+        with torch.no_grad(): # reduce memory consumption 
+            with torch.amp.autocast(device_type=device.type, dtype=torch.float16):  # runs scope in mixed precision, reducing memory consumption
+                # forward loop from start frame
+                for frame_number, frame_path in enumerate(images[start_frame:], start=start_frame): 
+                    if not propagating:
+                        break
+                    img = cv2.imread(frame_path)
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    img = resize_image(img) # resize image to matting quality
+                    img = torch.tensor(img / 255., dtype=torch.float32, device=device).permute(2, 0, 1)  # Normalize and reorder channels
 
-        # forward loop from start frame
-        if start_frame < frame_count - 1:
-            for frame_number, frame_path in enumerate(images[start_frame:], start=start_frame): 
-                if not propagating:
-                    break
-                img = cv2.imread(frame_path)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                img = resize_image(img) # resize image to matting quality
-                img = torch.tensor(img / 255., dtype=torch.float32, device=device).permute(2, 0, 1)  # Normalize and reorder channels
-
-                with torch.no_grad(): #why do i need no_grad? its not in the original, but without this the vram explodes
                     if frame_number == start_frame:
                         output_prob = mat_processor.step(img, mask, objects=[1])      # encode given mask
                         for i in range(10): # warmup by processing first frame 10 times
@@ -797,30 +796,31 @@ def run_matting(start_frame):
                     mat = (mat*255).astype(np.uint8)
                     mat = restore_image_size(mat, original_size)
 
-                mat_filename = os.path.join(matting_dir, f"{frame_number:04d}", f"{object_id}.png")
-                os.makedirs(os.path.dirname(mat_filename), exist_ok=True)
-                cv2.imwrite(mat_filename, mat)
-                if frame_number % 10 == 0: # update preview every 10 frames
-                    yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
+                    mat_filename = os.path.join(matting_dir, f"{frame_number:04d}", f"{object_id}.png")
+                    os.makedirs(os.path.dirname(mat_filename), exist_ok=True)
+                    cv2.imwrite(mat_filename, mat)
+                    
+                    # free memory after every frame
+                    del output_prob, mat, img
+                    if device.type == "cuda":
+                        torch.cuda.empty_cache()
+                    elif device.type == "mps":
+                        torch.mps.empty_cache()
+                    
+                    if frame_number % 10 == 0: # update preview every 10 frames
+                        yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
 
-        # backward loop from start frame
-        if start_frame > 0:
-            for frame_number in range(start_frame, -1, -1): 
-                if not propagating:
-                    break
-                frame_path = images[frame_number]
-                img = cv2.imread(frame_path)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                img = resize_image(img) # resize image to matting quality
-                img = torch.tensor(img / 255., dtype=torch.float32, device=device).permute(2, 0, 1)  # Normalize and reorder channels
+                # backward loop from start frame
+                for frame_number in range(start_frame - 1, -1, -1):
+                    if not propagating:
+                        break
+                    frame_path = images[frame_number]
+                    img = cv2.imread(frame_path)
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    img = resize_image(img) # resize image to matting quality
+                    img = torch.tensor(img / 255., dtype=torch.float32, device=device).permute(2, 0, 1)  # Normalize and reorder channels
 
-                with torch.no_grad(): #why do i need this? its not in the original, but without this the vram explodes
-                    if frame_number == start_frame:
-                        output_prob = mat_processor.step(img, mask, objects=[1])      # encode given mask
-                        for i in range(10): # warmup by processing first frame 10 times
-                            output_prob = mat_processor.step(img, first_frame_pred=True)      # first frame for prediction
-                    else:
-                        output_prob = mat_processor.step(img)
+                    output_prob = mat_processor.step(img)
 
                     # convert output probabilities to alpha matte
                     mat = mat_processor.output_prob_to_mask(output_prob)
@@ -828,11 +828,19 @@ def run_matting(start_frame):
                     mat = (mat*255).astype(np.uint8)
                     mat = restore_image_size(mat, original_size)
 
-                mat_filename = os.path.join(matting_dir, f"{frame_number:04d}", f"{object_id}.png")
-                os.makedirs(os.path.dirname(mat_filename), exist_ok=True)
-                cv2.imwrite(mat_filename, mat)
-                if frame_number % 10 == 0: # update preview every 10 frames
-                    yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
+                    mat_filename = os.path.join(matting_dir, f"{frame_number:04d}", f"{object_id}.png")
+                    os.makedirs(os.path.dirname(mat_filename), exist_ok=True)
+                    cv2.imwrite(mat_filename, mat)
+                    
+                    # free memory after every frame
+                    del output_prob, mat, img
+                    if device.type == "cuda":
+                        torch.cuda.empty_cache()
+                    elif device.type == "mps":
+                        torch.mps.empty_cache()
+                    
+                    if frame_number % 10 == 0: # update preview every 10 frames
+                        yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
     
     if not propagating: # if cancelled, delete matting dir
         if os.path.exists(matting_dir):
@@ -857,20 +865,20 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
     if content == "Matting":
         if not os.path.exists(matting_dir):
             gr.Warning("No mattes to export. Please \"Run Matting\" from the Matting tab first.")
-            return "No mattes to export. Please \"Run Matting\" from the Matting tab first."
+            return ("No mattes to export. Please \"Run Matting\" from the Matting tab first.", None)
         total_masks = sum([len(files) for _, _, files in os.walk(matting_dir)])
         if frame_count*object_count != total_masks:
             gr.Warning("Not all frames have mattes. Please \"Run Matting\" from the Matting tab.")
-            return "Not all frames have mattes. Please \"Run Matting\" from the Matting tab."
+            return ("Not all frames have mattes. Please \"Run Matting\" from the Matting tab.", None)
     else:
         if not os.path.exists(mask_dir):
             gr.Warning("No masks to export. Please run \"Track Objects\" first.")
-            return "No masks to export. Please run \"Track Objects\" first."
+            return ("No masks to export. Please run \"Track Objects\" first.", None)
             
         total_masks = sum([len(files) for _, _, files in os.walk(mask_dir)])
         if frame_count*object_count != total_masks:
             gr.Warning("Not all frames have masks. Please run \"Track Objects\".")
-            return "Not all frames have masks. Please run \"Track Objects\"."
+            return ("Not all frames have masks. Please run \"Track Objects\".", None)
 
     images = []
     masks = []
@@ -888,7 +896,7 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
         fps = float(fps)
     except ValueError:
         gr.Warning("Invalid FPS value. Please enter a number.")
-        return "Invalid FPS value. Please enter a number."
+        return ("Invalid FPS value. Please enter a number.", None)
     # convert float framerates to fraction
     if isinstance(fps, float):                                                                
         if fps == 29.97:
