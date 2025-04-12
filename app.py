@@ -663,7 +663,7 @@ def update_color(object_id):
 
 # set the matting frame slider to the same frame as the segmentation frame slider, and vice versa
 def sync_sliders(frame_number): 
-    frame_count = max(count_frames()-1,0)
+    frame_count = count_frames()
     return gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
 
 # Function to update the matting preview image based on the slider value
@@ -998,7 +998,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     settings = load_settings()
     device = setup_cuda()
     predictor = load_model()
-    frame_count = max(count_frames()-1,0)
+    frame_count = count_frames()
     mat_processor = load_matting_model()
     save_settings() # save settings in case defaults have not been saved yet
 
@@ -1039,7 +1039,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             """)
         
         image_viewer = gr.Image(label="Frame Viewer", interactive=False, show_download_button=False, show_label=False)
-        frame_slider = gr.Slider(0, frame_count, step=1, label="Frame Number")
+        frame_slider = gr.Slider(0, frame_count-1, step=1, label="Frame Number")
         with gr.Row():
             with gr.Column(scale=2):
                 with gr.Row():
@@ -1079,7 +1079,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             - If you are satisfied with the result, move to the Export tab to render the video.
             """)
         image_viewer_mat = gr.Image(label="Frame Viewer", interactive=False, show_download_button=False, show_label=False)
-        frame_slider_mat = gr.Slider(0, frame_count, step=1, label="Frame Number")
+        frame_slider_mat = gr.Slider(0, frame_count-1, step=1, label="Frame Number")
         viewer_output_radio = gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Segmentation Mask", interactive=True)
         matting_btn = gr.Button(value="Run Matting (based on segmentation mask of selected frame)")
         cancel_matting_btn = gr.Button(value="Cancel Matting", visible=False)
