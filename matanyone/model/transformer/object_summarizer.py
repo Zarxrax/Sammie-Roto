@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional
+from typing import Optional
 from omegaconf import DictConfig
 
 import torch
@@ -75,7 +75,7 @@ class ObjectSummarizer(nn.Module):
             pe = self.pos_enc(value)
             value = value + pe
 
-        with torch.amp.autocast('cuda', enabled=False):
+        with torch.amp.autocast("cuda",enabled=False):
             value = value.float()
             feature = self.feature_pred(value)
             logits = self.weights_pred(value)

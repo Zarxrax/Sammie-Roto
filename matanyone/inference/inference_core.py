@@ -1,9 +1,15 @@
-from typing import List, Optional, Iterable, Dict
 import logging
 from omegaconf import DictConfig
+from typing import List, Optional, Iterable, Union,Tuple
 
-import numpy as np
+import os
+import cv2
 import torch
+#import imageio
+import tempfile
+import numpy as np
+from tqdm import tqdm
+from PIL import Image
 import torch.nn.functional as F
 
 from matanyone.inference.memory_manager import MemoryManager
@@ -11,6 +17,7 @@ from matanyone.inference.object_manager import ObjectManager
 from matanyone.inference.image_feature_store import ImageFeatureStore
 from matanyone.model.matanyone import MatAnyone
 from matanyone.utils.tensor_utils import pad_divide_by, unpad, aggregate
+from matanyone.utils.inference_utils import gen_dilate, gen_erosion, read_frame_from_videos
 
 log = logging.getLogger()
 
@@ -18,11 +25,18 @@ log = logging.getLogger()
 class InferenceCore:
 
     def __init__(self,
-                 network: MatAnyone,
-                 cfg: DictConfig,
+                 network: Union[MatAnyone,str],
+                 cfg: DictConfig = None,
                  *,
-                 image_feature_store: ImageFeatureStore = None):
-        self.network = network
+                 image_feature_store: ImageFeatureStore = None,
+                 device: Union[str, torch.device] = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                 ):
+        if isinstance(network, str):
+            network = MatAnyone.from_pretrained(network)
+        network.to(device)
+        network.eval()
+        self.network = network  
+        cfg = cfg if cfg is not None else network.cfg
         self.cfg = cfg
         self.mem_every = cfg.mem_every
         stagger_updates = cfg.stagger_updates
@@ -404,3 +418,128 @@ class InferenceCore:
                 new_mask[mask == tmp_id] = obj.id
 
         return new_mask
+
+    @torch.inference_mode()
+    @torch.amp.autocast("cuda")
+    def process_video(
+        self,
+        input_path: str,
+        mask_path: str,
+        output_path: str = None,
+        n_warmup: int = 10,
+        r_erode: int = 10,
+        r_dilate: int = 10,
+        suffix: str = "",
+        save_image: bool = False,
+        max_size: int = -1,
+    ) -> Tuple:
+        """
+        Process a video for object segmentation and matting.
+        This method processes a video file by performing object segmentation and matting on each frame.
+        It supports warmup frames, mask erosion/dilation, and various output options.
+        Args:
+            input_path (str): Path to the input video file
+            mask_path (str): Path to the mask image file used for initial segmentation
+            output_path (str, optional): Directory path where output files will be saved. Defaults to a temporary directory
+            n_warmup (int, optional): Number of warmup frames to use. Defaults to 10
+            r_erode (int, optional): Erosion radius for mask processing. Defaults to 10
+            r_dilate (int, optional): Dilation radius for mask processing. Defaults to 10
+            suffix (str, optional): Suffix to append to output filename. Defaults to ""
+            save_image (bool, optional): Whether to save individual frames. Defaults to False
+            max_size (int, optional): Maximum size for frame dimension. Use -1 for no limit. Defaults to -1
+        Returns:
+            Tuple[str, str]: A tuple containing:
+                - Path to the output foreground video file (str)
+                - Path to the output alpha matte video file (str)
+        Output:
+            - Saves processed video files with foreground (_fgr) and alpha matte (_pha)
+            - If save_image=True, saves individual frames in separate directories
+        """
+        output_path = output_path if output_path is not None else tempfile.TemporaryDirectory().name
+        r_erode = int(r_erode)
+        r_dilate = int(r_dilate)
+        n_warmup = int(n_warmup)
+        max_size = int(max_size)
+
+        vframes, fps, length, video_name = read_frame_from_videos(input_path)
+        repeated_frames = vframes[0].unsqueeze(0).repeat(n_warmup, 1, 1, 1)
+        vframes = torch.cat([repeated_frames, vframes], dim=0).float()
+        length += n_warmup
+
+        new_h, new_w = vframes.shape[-2:]
+        if max_size > 0:
+            h, w = new_h, new_w
+            min_side = min(h, w)
+            if min_side > max_size:
+                new_h = int(h / min_side * max_size)
+                new_w = int(w / min_side * max_size)
+                vframes = F.interpolate(vframes, size=(new_h, new_w), mode="area")
+
+        os.makedirs(output_path, exist_ok=True)
+        if suffix:
+            video_name = f"{video_name}_{suffix}"
+        if save_image:
+            os.makedirs(f"{output_path}/{video_name}", exist_ok=True)
+            os.makedirs(f"{output_path}/{video_name}/pha", exist_ok=True)
+            os.makedirs(f"{output_path}/{video_name}/fgr", exist_ok=True)
+
+        mask = np.array(Image.open(mask_path).convert("L"))
+        if r_dilate > 0:
+            mask = gen_dilate(mask, r_dilate, r_dilate)
+        if r_erode > 0:
+            mask = gen_erosion(mask, r_erode, r_erode)
+        
+        mask = torch.from_numpy(mask).cuda()
+        if max_size > 0:
+            mask = F.interpolate(
+                mask.unsqueeze(0).unsqueeze(0), size=(new_h, new_w), mode="nearest"
+            )[0, 0]
+
+        bgr = (np.array([120, 255, 155], dtype=np.float32) / 255).reshape((1, 1, 3))
+        objects = [1]
+
+        phas = []
+        fgrs = []
+        for ti in tqdm(range(length)):
+            image = vframes[ti]
+            image_np = np.array(image.permute(1, 2, 0))
+            image = (image / 255.0).cuda().float()
+
+            if ti == 0:
+                output_prob = self.step(image, mask, objects=objects)
+                output_prob = self.step(image, first_frame_pred=True)
+            else:
+                if ti <= n_warmup:
+                    output_prob = self.step(image, first_frame_pred=True)
+                else:
+                    output_prob = self.step(image)
+
+            mask = self.output_prob_to_mask(output_prob)
+            pha = mask.unsqueeze(2).cpu().numpy()
+            com_np = image_np / 255.0 * pha + bgr * (1 - pha)
+
+            if ti > (n_warmup - 1):
+                com_np = (com_np * 255).astype(np.uint8)
+                pha = (pha * 255).astype(np.uint8)
+                fgrs.append(com_np)
+                phas.append(pha)
+                if save_image:
+                    cv2.imwrite(
+                        f"{output_path}/{video_name}/pha/{str(ti - n_warmup).zfill(5)}.png",
+                        pha,
+                    )
+                    cv2.imwrite(
+                        f"{output_path}/{video_name}/fgr/{str(ti - n_warmup).zfill(5)}.png",
+                        com_np[..., [2, 1, 0]],
+                    )
+
+        fgrs = np.array(fgrs)
+        phas = np.array(phas)
+        
+        fgr_filename = f"{output_path}/{video_name}_fgr.mp4"
+        alpha_filename = f"{output_path}/{video_name}_pha.mp4"
+        
+        #imageio.mimwrite(fgr_filename, fgrs, fps=fps, quality=7)
+        #imageio.mimwrite(alpha_filename, phas, fps=fps, quality=7)
+        
+        return (fgr_filename,alpha_filename)

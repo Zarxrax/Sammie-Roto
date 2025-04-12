@@ -1,8 +1,9 @@
 from typing import List, Iterable
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-from matanyone.model.group_modules import *
+from matanyone.model.group_modules import MainToGroupDistributor, GroupResBlock, upsample_groups, GConv2d, downsample_groups
 
 
 class UpsampleBlock(nn.Module):
@@ -77,7 +78,7 @@ class SensoryUpdater_fullscale(nn.Module):
             self.g2_conv(downsample_groups(g[3], ratio=1/8)) + \
             self.g1_conv(downsample_groups(g[4], ratio=1/16))
 
-        with torch.amp.autocast('cuda', enabled=False):
+        with torch.amp.autocast("cuda",enabled=False):
             g = g.float()
             h = h.float()
             values = self.transform(torch.cat([g, h], dim=2))
@@ -101,7 +102,7 @@ class SensoryUpdater(nn.Module):
         g = self.g16_conv(g[0]) + self.g8_conv(downsample_groups(g[1], ratio=1/2)) + \
             self.g4_conv(downsample_groups(g[2], ratio=1/4))
 
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast("cuda",enabled=False):
             g = g.float()
             h = h.float()
             values = self.transform(torch.cat([g, h], dim=2))
@@ -118,7 +119,7 @@ class SensoryDeepUpdater(nn.Module):
         nn.init.xavier_normal_(self.transform.weight)
 
     def forward(self, g: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
-        with torch.amp.autocast('cuda', enabled=False):
+        with torch.amp.autocast("cuda",enabled=False):
             g = g.float()
             h = h.float()
             values = self.transform(torch.cat([g, h], dim=2))
