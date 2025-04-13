@@ -9,6 +9,7 @@ import av
 import torch
 from collections import namedtuple
 from fractions import Fraction
+from tqdm import tqdm
 from sammie.smooth import run_smoothing_model, prepare_smoothing_model
 from matanyone.inference.inference_core import InferenceCore
 from matanyone.utils.get_default_model import get_matanyone_model
@@ -565,6 +566,7 @@ def propagate_masks():
         if out_frame_idx % 10 == 0: # update preview every 10 frames
             yield [gr.Slider(minimum=0,maximum=frame_count-1, value=out_frame_idx, step=1, label="Frame Number"), update_image(out_frame_idx)]
     if not propagating:
+        print("Tracking cancelled")
         clear_tracking()
     else:
         global propagated 
@@ -730,12 +732,15 @@ def restore_image_size(image, original_size):
     restored_image = cv2.resize(image, (original_h, original_w), interpolation=cv2.INTER_LINEAR)
     return restored_image
       
+@torch.inference_mode() 
 def run_matting(start_frame):
     clear_cache()
     global propagating
     propagating = True
     frame_count = count_frames()
     object_ids = get_objects()
+    total_frame_count = frame_count * len(object_ids)
+    progress = tqdm(total=total_frame_count, desc="Matting Progress")
 
     if os.path.exists(matting_dir):
         shutil.rmtree(matting_dir)
@@ -748,97 +753,100 @@ def run_matting(start_frame):
         if os.path.exists(image_filename):
             images.append(image_filename)
 
-    with torch.inference_mode():
-        with torch.amp.autocast(enabled=False, device_type=device.type, dtype=torch.float16):  # slightly reduces memory consumption but decreases quality. Currently leaving off.
-            for object_id in object_ids:
-                # load the first-frame mask
-                mask_filename = os.path.join(mask_dir, f"{start_frame:04d}", f"{object_id}.png")
-                if os.path.exists(mask_filename):
-                    mask = cv2.imread(mask_filename, cv2.IMREAD_GRAYSCALE)
-                else:   
-                    print("Mask not found for object", object_id)
-                    gr.Warning("Mask not found for object", object_id)
-                    continue
-                if mask is None or not np.any(mask):  # Ensure mask is not blank
-                    print("Mask is blank for object", object_id)
-                    gr.Warning("Mask is blank for object", object_id)
-                    continue
-                _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-                mask = fill_small_holes(mask)
-                mask = remove_small_dots(mask)
-                original_size = mask.shape[1::-1]
-                mask = resize_image(mask) # resize mask to matting quality
-                mask = torch.tensor(mask, dtype=torch.float32, device=device)
+    with torch.amp.autocast(enabled=False, device_type=device.type, dtype=torch.float16):  # slightly reduces memory consumption but decreases quality. Currently leaving off.
+        for object_id in object_ids:
+            # load the first-frame mask
+            mask_filename = os.path.join(mask_dir, f"{start_frame:04d}", f"{object_id}.png")
+            if os.path.exists(mask_filename):
+                mask = cv2.imread(mask_filename, cv2.IMREAD_GRAYSCALE)
+            else:   
+                print("Mask not found for object", object_id)
+                gr.Warning("Mask not found for object", object_id)
+                continue
+            if mask is None or not np.any(mask):  # Ensure mask is not blank
+                print("Mask is blank for object", object_id)
+                gr.Warning("Mask is blank for object", object_id)
+                continue
+            _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+            mask = fill_small_holes(mask)
+            mask = remove_small_dots(mask)
+            original_size = mask.shape[1::-1]
+            mask = resize_image(mask) # resize mask to matting quality
+            mask = torch.tensor(mask, dtype=torch.float32, device=device)
 
-                # forward loop from start frame
-                if start_frame < frame_count - 1: # only run this block if we are not starting from the last frame
-                    for frame_number, frame_path in enumerate(images[start_frame:], start=start_frame): 
-                        if not propagating: # checks for the user to cancel
-                            break
-                        img = cv2.imread(frame_path)
-                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                        img = resize_image(img) # resize image to matting quality
-                        img = torch.tensor(img / 255., dtype=torch.float32, device=device).permute(2, 0, 1)  # Normalize and reorder channels
+            # forward loop from start frame
+            if start_frame < frame_count - 1: # only run this block if we are not starting from the last frame
+                for frame_number, frame_path in enumerate(images[start_frame:], start=start_frame): 
+                    if not propagating: # checks for the user to cancel
+                        break
+                    img = cv2.imread(frame_path)
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    img = resize_image(img) # resize image to matting quality
+                    img = torch.tensor(img / 255., dtype=torch.float32, device=device).permute(2, 0, 1)  # Normalize and reorder channels
 
-                        if frame_number == start_frame:
-                            output_prob = mat_processor.step(img, mask, objects=[1])      # encode given mask
-                            for i in range(10): # warmup by processing first frame 10 times
-                                output_prob = mat_processor.step(img, first_frame_pred=True)      # first frame for prediction
-                                clear_cache()
-                            yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
-                        else:
-                            output_prob = mat_processor.step(img)
+                    if frame_number == start_frame:
+                        output_prob = mat_processor.step(img, mask, objects=[1])      # encode given mask
+                        for i in range(10): # warmup by processing first frame 10 times
+                            output_prob = mat_processor.step(img, first_frame_pred=True)      # first frame for prediction
+                            clear_cache()
+                        yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
+                    else:
+                        output_prob = mat_processor.step(img)
 
-                        # convert output probabilities to alpha matte
-                        mat = mat_processor.output_prob_to_mask(output_prob)
-                        mat = mat.detach().cpu().numpy()
-                        mat = (mat*255).astype(np.uint8)
-                        mat = restore_image_size(mat, original_size)
+                    # convert output probabilities to alpha matte
+                    mat = mat_processor.output_prob_to_mask(output_prob)
+                    mat = mat.detach().cpu().numpy()
+                    mat = (mat*255).astype(np.uint8)
+                    mat = restore_image_size(mat, original_size)
 
-                        mat_filename = os.path.join(matting_dir, f"{frame_number:04d}", f"{object_id}.png")
-                        os.makedirs(os.path.dirname(mat_filename), exist_ok=True)
-                        cv2.imwrite(mat_filename, mat)
-                        clear_cache()
-                        if frame_number % 10 == 0: # update preview every 10 frames
-                            yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
+                    mat_filename = os.path.join(matting_dir, f"{frame_number:04d}", f"{object_id}.png")
+                    os.makedirs(os.path.dirname(mat_filename), exist_ok=True)
+                    cv2.imwrite(mat_filename, mat)
+                    clear_cache()
+                    progress.update(1)
+                    if frame_number % 10 == 0: # update preview every 10 frames
+                        yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
 
-                # backward loop from start frame
-                if start_frame > 0: # only run this block if we are not starting from the first frame
-                    for frame_number in range(start_frame, -1, -1): 
-                        if not propagating: # checks for the user to cancel
-                            break
-                        frame_path = images[frame_number]
-                        img = cv2.imread(frame_path)
-                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                        img = resize_image(img) # resize image to matting quality
-                        img = torch.tensor(img / 255., dtype=torch.float32, device=device).permute(2, 0, 1)  # Normalize and reorder channels
+            # backward loop from start frame
+            if start_frame > 0: # only run this block if we are not starting from the first frame
+                for frame_number in range(start_frame, -1, -1): 
+                    if not propagating: # checks for the user to cancel
+                        break
+                    frame_path = images[frame_number]
+                    img = cv2.imread(frame_path)
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    img = resize_image(img) # resize image to matting quality
+                    img = torch.tensor(img / 255., dtype=torch.float32, device=device).permute(2, 0, 1)  # Normalize and reorder channels
 
-                        if frame_number == start_frame:
-                            output_prob = mat_processor.step(img, mask, objects=[1])      # encode given mask
-                            for i in range(10): # warmup by processing first frame 10 times
-                                output_prob = mat_processor.step(img, first_frame_pred=True)      # first frame for prediction
-                                clear_cache()
-                        else:
-                            output_prob = mat_processor.step(img)
+                    if frame_number == start_frame:
+                        output_prob = mat_processor.step(img, mask, objects=[1])      # encode given mask
+                        for i in range(10): # warmup by processing first frame 10 times
+                            output_prob = mat_processor.step(img, first_frame_pred=True)      # first frame for prediction
+                            clear_cache()
+                    else:
+                        output_prob = mat_processor.step(img)
 
-                        # convert output probabilities to alpha matte
-                        mat = mat_processor.output_prob_to_mask(output_prob)
-                        mat = mat.detach().cpu().numpy()
-                        mat = (mat*255).astype(np.uint8)
-                        mat = restore_image_size(mat, original_size)
+                    # convert output probabilities to alpha matte
+                    mat = mat_processor.output_prob_to_mask(output_prob)
+                    mat = mat.detach().cpu().numpy()
+                    mat = (mat*255).astype(np.uint8)
+                    mat = restore_image_size(mat, original_size)
 
-                        mat_filename = os.path.join(matting_dir, f"{frame_number:04d}", f"{object_id}.png")
-                        os.makedirs(os.path.dirname(mat_filename), exist_ok=True)
-                        cv2.imwrite(mat_filename, mat)
-                        clear_cache()
-                        if frame_number % 10 == 0: # update preview every 10 frames
-                            yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
+                    mat_filename = os.path.join(matting_dir, f"{frame_number:04d}", f"{object_id}.png")
+                    os.makedirs(os.path.dirname(mat_filename), exist_ok=True)
+                    cv2.imwrite(mat_filename, mat)
+                    clear_cache()
+                    progress.update(1)
+                    if frame_number % 10 == 0: # update preview every 10 frames
+                        yield gr.Slider(minimum=0,maximum=frame_count-1, value=frame_number, step=1, label="Frame Number")
     
     # measuring memory usage
     #print(torch.cuda.max_memory_allocated(device="cuda") / (1024 ** 3))
     #print(torch.cuda.max_memory_reserved(device="cuda") / (1024 ** 3))
-
+    
+    progress.close()
     if not propagating: # if cancelled, delete matting dir
+        print("Matting Cancelled")
         if os.path.exists(matting_dir):
             shutil.rmtree(matting_dir)
         os.makedirs(matting_dir)
@@ -1014,7 +1022,6 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             print("Resuming previous session...")
             inference_state = predictor.init_state(video_path=frames_dir, async_loading_frames=True, offload_video_to_cpu=True)
             clear_tracking() # remove any tracking data from previous session and replay the points
-    print("Ready.")
 
     # Define the Gradio components
     with gr.Sidebar():
