@@ -60,13 +60,12 @@ def setup_cuda():
     print(f"Using device: {device}")
 
     if device.type == "cuda":
-        # use bfloat16
-        torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
         print("CUDA Compute Capability: ", torch.cuda.get_device_capability())
-        # turn on tfloat32 for Ampere GPUs
+        # turn on tfloat32 for Ampere GPUs / not sure if this has an effect, may remove in the future
         if torch.cuda.get_device_properties(0).major >= 8:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
+
     return device
 
 # Load the model and predictor / this can only be called once because the imports will interfere with each other
@@ -571,6 +570,9 @@ def propagate_masks():
         global propagated 
         propagated= True
     propagating = False
+    # measuring memory usage
+    #print(torch.cuda.max_memory_allocated(device="cuda") / (1024 ** 3))
+    #print(torch.cuda.max_memory_reserved(device="cuda") / (1024 ** 3))
     yield [gr.Slider(minimum=0,maximum=frame_count-1, value=0, step=1, label="Frame Number"), update_image(0)]
 
 def cancel_propagation():
