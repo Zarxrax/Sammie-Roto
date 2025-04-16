@@ -29,25 +29,27 @@ You may also be interested in another similar tool that I created, [Cutie-Roto](
 - Run 'install_dependencies.bat' and follow the prompt.
 - Run 'run_sammie.bat' to launch the software.
 
-#### Manual Installation (Linux, Mac)
-I can only test on Windows, so please let me know if there are any issues with this running on Linux or Mac.
+Everything is self-contained in the Sammie-Roto folder. If you want to remove the application, simply delete this folder.
 
-If you want to install on Windows, see the section above!
+### Manual Installation (Linux, Mac)
+* I can only test on Windows, so please let me know if there are any issues with this running on Linux or Mac.
+* If you want to install on Windows, see the section above!
 #### Prerequisites:
-* [Python](https://www.python.org/) (tested on version 3.12)
-* [Pytorch](https://pytorch.org) (tested on version 2.5.1)
+* Install [Python](https://www.python.org/) (version 3.10+)
+* Install [Pytorch](https://pytorch.org)
+* It is HIGHLY recommended to set up a python virtual environment (venv) or use conda, in order to keep the python dependencies separated from your system python.
 
 ##### Clone the repository and install dependencies:
 ```
 git clone https://github.com/Zarxrax/Sammie-Roto.git
 cd Sammie-Roto
-pip install wheel
-pip install -r requirements.txt
+pip3 install wheel
+pip3 install -r requirements.txt
 ```
 
 ##### Download the models:
 ```
-python sammie\download_models.py
+python sammie/download_models.py
 ```
 
 ##### Launch the application:
