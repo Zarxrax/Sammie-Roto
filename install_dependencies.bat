@@ -20,7 +20,7 @@ if errorlevel 4 (
     echo Uninstalling existing Pytorch if found
     .\python-3.12.8-embed-amd64\python.exe -m pip uninstall -y torch torchvision
     echo Installing CPU version of PyTorch
-    .\python-3.12.8-embed-amd64\python.exe -m pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cpu --no-warn-script-location
+    .\python-3.12.8-embed-amd64\python.exe -m pip install torch==2.7.0 torchvision --index-url https://download.pytorch.org/whl/cpu --no-warn-script-location
     .\python-3.12.8-embed-amd64\python.exe -m pip install -r .\requirements.txt --no-warn-script-location
     .\python-3.12.8-embed-amd64\python.exe .\sammie\download_models.py
 ) else (
@@ -29,7 +29,7 @@ if errorlevel 4 (
     echo Uninstalling existing Pytorch if found
     .\python-3.12.8-embed-amd64\python.exe -m pip uninstall -y torch torchvision
     echo Installing CUDA version of PyTorch
-    .\python-3.12.8-embed-amd64\python.exe -m pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124 --no-warn-script-location
+    .\python-3.12.8-embed-amd64\python.exe -m pip install torch==2.7.0 torchvision --index-url https://download.pytorch.org/whl/cu128 --no-warn-script-location
     .\python-3.12.8-embed-amd64\python.exe -m pip install -r .\requirements.txt --no-warn-script-location
     .\python-3.12.8-embed-amd64\python.exe .\sammie\download_models.py
 )
