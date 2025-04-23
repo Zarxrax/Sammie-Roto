@@ -9,12 +9,14 @@ Sammie-Roto is designed to be a user-friendly tool for AI assisted masking of vi
 You may also be interested in another similar tool that I created, [Cutie-Roto](https://github.com/Zarxrax/Cutie-Roto). While Cutie-Roto and Sammie-Roto both serve a similar purpose, their internal workings are different, so each one might work better in certain situations.
 
 ### Updates
+- [04/23/2025] Added installer for Linux/Mac, reduced VRAM consumption, several improvements and bug fixes
 - [04/04/2025] Added some adjustment sliders to the Matting page.
 - [02/26/2025] Added human video matting support though [MatAnyone](https://github.com/pq-yang/MatAnyone), along with many other improvements.
 - [01/26/2025] Initial release
 
 ### Features
-- One-click installer for Windows users.
+- Supports Windows, Linux, and Mac
+- Simple installer automatically downloads all dependencies and models
 - Can run on as little as 4GB VRAM or even on CPU (but 6GB Nvidia GPU is recommended)
 - Includes 3 segmentation models: Sam 2.1 Large, Sam 2.1 Base+, and EfficientTAM_s_512x512.
 - Supports MatAnyone model for human video matting.
@@ -24,38 +26,21 @@ You may also be interested in another similar tool that I created, [Cutie-Roto](
 - Multiple export options: Black and White Matte, Alpha channel, and Greenscreen.
 
 ### Installation (Windows):
-- Download latest version from [releases](https://github.com/Zarxrax/Sammie-Roto/releases)
+- Download latest Windows version from [releases](https://github.com/Zarxrax/Sammie-Roto/releases)
 - Extract the zip archive.
 - Run 'install_dependencies.bat' and follow the prompt.
 - Run 'run_sammie.bat' to launch the software.
 
-Everything is self-contained in the Sammie-Roto folder. If you want to remove the application, simply delete this folder.
+Everything is self-contained in the Sammie-Roto folder. If you want to remove the application, simply delete this folder. You can also move the folder.
 
-### Manual Installation (Linux, Mac)
-* I can only test on Windows, so please let me know if there are any issues with this running on Linux or Mac.
-* If you want to install on Windows, see the section above!
-#### Prerequisites:
-* Install [Python](https://www.python.org/) (version 3.10+)
-* Install [Pytorch](https://pytorch.org)
-* It is HIGHLY recommended to set up a python virtual environment (venv) or use conda, in order to keep the python dependencies separated from your system python.
+### Installation (Linux, Mac)
+- Ensure [Python](https://www.python.org/) is installed (version 3.10 or higher)
+- Download latest Linux/Mac version from [releases](https://github.com/Zarxrax/Sammie-Roto/releases)
+- Extract the zip archive.
+- Open a terminal and navigate to the Sammie-Roto folder that you just extracted from the zip.
+- Execute the following command: `bash install_dependencies.sh` then follow the prompt.
+- MacOS users: double-click "run_sammie.command" to launch the program. Linux users: `bash run_sammie.command` or execute the file however you prefer.
 
-##### Clone the repository and install dependencies:
-```
-git clone https://github.com/Zarxrax/Sammie-Roto.git
-cd Sammie-Roto
-pip3 install wheel
-pip3 install -r requirements.txt
-```
-
-##### Download the models:
-```
-python sammie/download_models.py
-```
-
-##### Launch the application:
-```
-python app.py
-```
 
 ### Acknowledgements
 * [SAM 2](https://github.com/facebookresearch/sam2)
