@@ -7,6 +7,9 @@ import shutil
 import json
 import av 
 import torch
+import requests
+import threading
+from packaging import version
 from collections import namedtuple
 from fractions import Fraction
 from tqdm import tqdm
@@ -17,6 +20,7 @@ from matanyone.utils.get_default_model import get_matanyone_model
 # .........................................................................................
 # Global variables
 # .........................................................................................
+__version__ = "1.3.0"
 temp_dir = "temp"
 frames_dir = os.path.join(temp_dir, "frames")
 mask_dir = os.path.join(temp_dir, "masks")
@@ -44,7 +48,7 @@ PALETTE = [
 
 # Set up CUDA if available
 def setup_cuda():
-    print("Sammie-Roto version 1.2")
+    print(f"Sammie-Roto version {__version__}")
     # if using Apple MPS, fall back to CPU for unsupported ops
     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
     print("PyTorch version:", torch.__version__)
@@ -98,6 +102,22 @@ def load_matting_model():
     print("Loaded MatAnyone model")
     # init inference processor
     return InferenceCore(matanyone, cfg=matanyone.cfg, device=device)
+
+# Check for updates
+def start_update_check(repo="Zarxrax/Sammie-Roto", timeout=5):
+    def background_check():
+        try:
+            url = f"https://api.github.com/repos/{repo}/releases/latest"
+            response = requests.get(url, timeout=timeout)
+            if response.status_code == 200:
+                latest = response.json().get("tag_name", "").lstrip("v")
+                if version.parse(latest) > version.parse(__version__):
+                    print(f"\n🔔 A new version of Sammie-roto is available! ({__version__} → {latest})")
+                    print(f"👉 Download: https://github.com/{repo}/releases\n")
+        except Exception:
+            pass  # Fail silently, no impact on startup
+    threading.Thread(target=background_check, daemon=True).start()
+
 
 # Save settings if the user changes the settings
 def change_settings(model_dropdown, matting_quality_dropdown, cpu_checkbox):
@@ -591,14 +611,8 @@ def undo_point():
         mask_filename = os.path.join(mask_dir, f"{point.Frame:04d}", f"{point.ObjectID}.png")
         if os.path.exists(mask_filename):
             os.remove(mask_filename)
+        clear_tracking() # clear tracking data (if it exists) and replay the points
         save_json(points_list)
-        if propagated:
-            clear_tracking() #we need to clear the tracking data if removing points from an object
-        else:
-            predictor.clear_all_prompts_in_frame(inference_state, point.Frame, point.ObjectID)
-            segment_image(point.Frame, point.ObjectID) # redraw the masks in case any other points are on the frame        
-            if len(points_list) == 0: # if we removed the last point, just reset the state
-                predictor.reset_state(inference_state)
     return points_list
 
 # Clear tracking data by deleting all masks then replaying the points
@@ -640,8 +654,6 @@ def clear_points_obj(frame_number, object_id):
             os.remove(mask_filename)
         clear_tracking() #we need to clear the tracking data if removing points from an object
         save_json(points_list)
-        if len(points_list) == 0:
-            predictor.reset_state(inference_state)
     return points_list
 
 def clear_all_points_obj(object_id):
@@ -1004,6 +1016,7 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
 # ........................................................................................................................................
 with gr.Blocks(title='Sammie-Roto') as demo:
 
+    start_update_check()
     settings = load_settings()
     device = setup_cuda()
     predictor = load_model()
