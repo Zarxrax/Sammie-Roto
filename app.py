@@ -20,7 +20,7 @@ from matanyone.utils.get_default_model import get_matanyone_model
 # .........................................................................................
 # Global variables
 # .........................................................................................
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 temp_dir = "temp"
 frames_dir = os.path.join(temp_dir, "frames")
 mask_dir = os.path.join(temp_dir, "masks")
@@ -945,27 +945,22 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
         else:
             mask_folder = os.path.join(mask_dir, f"{frame_number:04d}")
         if object == "All":
-            masks = [os.path.join(mask_folder, f"{object_id}.png") for object_id in object_ids]
-            mask = cv2.imread(masks[0], cv2.IMREAD_GRAYSCALE)
-            if content != "Matting":
-                _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-                mask = fill_small_holes(mask)
-                mask = remove_small_dots(mask)
-                mask = grow_shrink(mask)
-            if content == "Matting":
-                mask = gamma(mask)
-                mask = grow_shrink_matte(mask)
-            for file_path in masks[1:]:
+            for i, object_id in enumerate(object_ids):
+                file_path = os.path.join(mask_folder, f"{object_id}.png")
                 current_mask = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
                 if content != "Matting":
                     _, current_mask = cv2.threshold(current_mask, 127, 255, cv2.THRESH_BINARY)
                     current_mask = fill_small_holes(current_mask)
                     current_mask = remove_small_dots(current_mask)
-                    current_mask = grow_shrink(mask)
-                if content == "Matting":
+                    current_mask = grow_shrink(current_mask)
+                elif content == "Matting":
                     current_mask = gamma(current_mask)
                     current_mask = grow_shrink_matte(current_mask)
-                mask = cv2.bitwise_or(mask, current_mask)
+                # Initialize or accumulate
+                if mask is None:
+                    mask = current_mask
+                else:
+                    mask = cv2.bitwise_or(mask, current_mask)
             mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
         else:
             mask_filename = os.path.join(mask_dir, f"{frame_number:04d}", f"{object}.png")
@@ -975,7 +970,7 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
                 mask = fill_small_holes(mask)
                 mask = remove_small_dots(mask)
                 mask = grow_shrink(mask)
-            if content == "Matting":
+            elif content == "Matting":
                 mask = gamma(mask)
                 mask = grow_shrink_matte(mask)
             mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
@@ -1034,7 +1029,6 @@ with gr.Blocks(title='Sammie-Roto') as demo:
         if os.path.exists(frames_dir):
             print("Resuming previous session...")
             inference_state = predictor.init_state(video_path=frames_dir, async_loading_frames=True, offload_video_to_cpu=True)
-            clear_tracking() # remove any tracking data from previous session and replay the points
 
     # Define the Gradio components
     with gr.Sidebar():
