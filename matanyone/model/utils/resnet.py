@@ -33,8 +33,8 @@ def load_weights_add_extra_dim(target, source_state, extra_dim=1):
 
 
 model_urls = {
-    'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth',
-    'resnet50': 'https://download.pytorch.org/models/resnet50-19c8e357.pth',
+    'resnet18': 'http://download.pytorch.org/models/resnet18-5c106cde.pth',
+    'resnet50': 'http://download.pytorch.org/models/resnet50-19c8e357.pth',
 }
 
 
