@@ -20,7 +20,7 @@ from matanyone.utils.get_default_model import get_matanyone_model
 # .........................................................................................
 # Global variables
 # .........................................................................................
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 temp_dir = "temp"
 frames_dir = os.path.join(temp_dir, "frames")
 mask_dir = os.path.join(temp_dir, "masks")
@@ -144,6 +144,11 @@ def change_settings(model_dropdown, matting_quality_dropdown, cpu_checkbox):
     save_settings()
     gr.Info("You must restart the application for changes to take effect.")
 
+def change_export_settings(export_type_dropdown, export_content_dropdown):
+    settings["export_type"] = export_type_dropdown
+    settings["export_content"] = export_content_dropdown
+    save_settings()
+
 # Save settings if user changes the postprocessing settings
 def change_postprocessing(post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider):
     settings["holes"] = post_holes_slider
@@ -171,6 +176,8 @@ def load_settings():
     "matting_quality": 720,
     "force_cpu": False,
     "export_fps": 24,
+    "export_type": "Matte",
+    "export_content": "Segmentation Mask",
     "holes": 0,
     "dots": 0,
     "grow": 0,
@@ -180,8 +187,10 @@ def load_settings():
     }
     try:
         with open("settings.json", 'r') as file:
-            settings = json.load(file)
-            return settings
+            user_settings = json.load(file)
+            # Merge defaults with user settings
+            merged_settings = {**default_settings, **user_settings}
+            return merged_settings
     except FileNotFoundError:
         print("Settings file not found. Using default settings.")
         return default_settings
@@ -218,6 +227,22 @@ def set_matting_quality_dropdown():
         return "1080p"
     elif settings["matting_quality"] == -1:
         return "Full"
+
+def set_export_type_dropdown():
+    if settings["export_type"] == "Matte": 
+        return "Matte"
+    elif settings["export_type"] == "Alpha": 
+        return "Alpha"
+    elif settings["export_type"] == "Greenscreen": 
+        return "Greenscreen"
+
+def set_export_content_dropdown():
+    if settings["export_content"] == "Segmentation Mask": 
+        return "Segmentation Mask"
+    elif settings["export_content"] == "Segmentation with Edge Smoothing": 
+        return "Segmentation with Edge Smoothing"
+    elif settings["export_content"] == "Matting": 
+        return "Matting"
 
 def set_postprocessing_holes_slider():
     return settings["holes"]
@@ -557,16 +582,16 @@ def draw_points(image, frame_number):
     return image
 
 def lock_ui():
-    return [gr.Button(value="Track Objects", visible=False), gr.Button(value="Cancel", visible=True), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.File(label="Upload Video File", file_types=['video', '.mkv'], interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
+    return [gr.Button(value="Track Objects", visible=False), gr.Button(value="Cancel", visible=True), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
 
 def unlock_ui():
-    return [gr.Button(value="Track Objects", visible=True), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=True), gr.Button(value="Clear Object (frame)", interactive=True), gr.Button(value="Clear Object", interactive=True), gr.Button(value="Clear Tracking Data", interactive=True), gr.Button(value="Clear All", interactive=True), gr.File(label="Upload Video File", file_types=['video', '.mkv'], interactive=True), gr.Tab(label="Matting", visible=True), gr.Tab(label="Export", visible=True)]
+    return [gr.Button(value="Track Objects", visible=True), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=True), gr.Button(value="Clear Object (frame)", interactive=True), gr.Button(value="Clear Object", interactive=True), gr.Button(value="Clear Tracking Data", interactive=True), gr.Button(value="Clear All", interactive=True), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=True), gr.Tab(label="Matting", visible=True), gr.Tab(label="Export", visible=True)]
 
 def lock_ui_matting():
-    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=False), gr.Button(value="Cancel Matting", visible=True), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=False), gr.File(label="Upload Video File", file_types=['video', '.mkv'], interactive=False), gr.Tab(label="Segmentation", visible=False), gr.Tab(label="Export", visible=False)]
+    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=False), gr.Button(value="Cancel Matting", visible=True), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=False), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=False), gr.Tab(label="Segmentation", visible=False), gr.Tab(label="Export", visible=False)]
 
 def unlock_ui_matting():
-    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=True), gr.Button(value="Cancel Matting", visible=False), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=True), gr.File(label="Upload Video File", file_types=['video', '.mkv'], interactive=True), gr.Tab(label="Segmentation", visible=True), gr.Tab(label="Export", visible=True)]
+    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=True), gr.Button(value="Cancel Matting", visible=False), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=True), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=True), gr.Tab(label="Segmentation", visible=True), gr.Tab(label="Export", visible=True)]
 
 def propagate_masks():
     global propagating
@@ -786,6 +811,31 @@ def run_matting(start_frame):
             mask = resize_image(mask) # resize mask to matting quality
             mask = torch.tensor(mask, dtype=torch.float32, device=device)
 
+            # special case if the sequence is only a single frame
+            if frame_count == 1:
+                frame_path = images[0]
+                img = cv2.imread(frame_path)
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img = resize_image(img)
+                img = torch.tensor(img / 255., dtype=torch.float32, device=device).permute(2, 0, 1)
+
+                output_prob = mat_processor.step(img, mask, objects=[1])
+                for i in range(10):
+                    output_prob = mat_processor.step(img, first_frame_pred=True)
+                    clear_cache()
+
+                mat = mat_processor.output_prob_to_mask(output_prob)
+                mat = mat.detach().cpu().numpy()
+                mat = (mat * 255).astype(np.uint8)
+                mat = restore_image_size(mat, original_size)
+
+                mat_filename = os.path.join(matting_dir, f"0000", f"{object_id}.png")
+                os.makedirs(os.path.dirname(mat_filename), exist_ok=True)
+                cv2.imwrite(mat_filename, mat)
+                progress.update(1)
+                yield gr.Slider(minimum=0, maximum=0, value=0, step=1, label="Frame Number")
+                continue  # skip to next object
+
             # forward loop from start frame
             if start_frame < frame_count - 1: # only run this block if we are not starting from the last frame
                 for frame_number, frame_path in enumerate(images[start_frame:], start=start_frame): 
@@ -869,6 +919,79 @@ def run_matting(start_frame):
 def update_export_objects():
     return gr.Dropdown(choices=["All"]+get_objects(), label="Export Object", interactive=True)
 
+def export_image(type, content, object):
+    object_ids = get_objects()
+    img = None
+    mask = None
+    frame_path = os.path.join(frames_dir, "0000.png")
+    image_filename = os.path.join(temp_dir, "output.png")
+
+    if content == "Matting":
+        if not os.path.exists(os.path.join(matting_dir, "0000")):
+            gr.Warning("No mattes to export. Please \"Run Matting\" from the Matting tab first.")
+            return ("No mattes to export. Please \"Run Matting\" from the Matting tab first.", None)
+        mask_folder = os.path.join(matting_dir, "0000")
+    else:
+        if not os.path.exists(os.path.join(mask_dir, "0000")):
+            gr.Warning("No masks to export. Please create a mask first.")
+            return ("No masks to export. Please create a mask first.", None)
+        mask_folder = os.path.join(mask_dir, "0000")
+    
+    if object == "All":
+        for i, object_id in enumerate(object_ids):
+            file_path = os.path.join(mask_folder, f"{object_id}.png")
+            current_mask = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
+            if content != "Matting":
+                _, current_mask = cv2.threshold(current_mask, 127, 255, cv2.THRESH_BINARY)
+                current_mask = fill_small_holes(current_mask)
+                current_mask = remove_small_dots(current_mask)
+                current_mask = grow_shrink(current_mask)
+            elif content == "Matting":
+                current_mask = gamma(current_mask)
+                current_mask = grow_shrink_matte(current_mask)
+            # Initialize or accumulate
+            if mask is None:
+                mask = current_mask
+            else:
+                mask = cv2.bitwise_or(mask, current_mask)
+        mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    else:
+        mask_filename = os.path.join(mask_folder, f"{object}.png")
+        mask = cv2.imread(mask_filename, cv2.IMREAD_GRAYSCALE)
+        if content != "Matting":
+            _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+            mask = fill_small_holes(mask)
+            mask = remove_small_dots(mask)
+            mask = grow_shrink(mask)
+        elif content == "Matting":
+            mask = gamma(mask)
+            mask = grow_shrink_matte(mask)
+        mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    if content == "Segmentation with Edge Smoothing":
+        smoothing_model = prepare_smoothing_model("./checkpoints/1x_binary_mask_smooth.pth", device)
+        mask = run_smoothing_model(mask, smoothing_model, device)
+    if type=="Alpha": 
+        img = cv2.imread(frame_path)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+        img[:, :, 3] = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2BGRA)
+        img = img * (mask/255)
+        img = img.astype(np.uint8)
+        #frame = av.VideoFrame.from_ndarray(img, format='bgra')
+    elif type=="Greenscreen":
+        img = cv2.imread(frame_path)
+        img = img * (mask/255)
+        green = np.zeros_like(img)
+        green[:, :] = [0, 255, 0]
+        img = img + (green * (cv2.bitwise_not(mask) / 255))
+        img = img.astype(np.uint8)
+        #frame = av.VideoFrame.from_ndarray(img, format='bgr24')
+    else: # type=="Matte"
+        img = mask
+        #frame = av.VideoFrame.from_ndarray(img, format='bgr24')
+    cv2.imwrite(image_filename, img)
+    return (f"Exported image to {image_filename}", gr.DownloadButton(label="💾 Download Exported Image", value=image_filename, visible=True))
+
 def export_video(fps, type, content, object, progress=gr.Progress()):
     frame_count = count_frames()
     total_masks = 0
@@ -878,20 +1001,20 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
     if content == "Matting":
         if not os.path.exists(matting_dir):
             gr.Warning("No mattes to export. Please \"Run Matting\" from the Matting tab first.")
-            return "No mattes to export. Please \"Run Matting\" from the Matting tab first."
+            return ("No mattes to export. Please \"Run Matting\" from the Matting tab first.", None)
         total_masks = sum([len(files) for _, _, files in os.walk(matting_dir)])
         if frame_count*object_count != total_masks:
             gr.Warning("Not all frames have mattes. Please \"Run Matting\" from the Matting tab.")
-            return "Not all frames have mattes. Please \"Run Matting\" from the Matting tab."
+            return ("Not all frames have mattes. Please \"Run Matting\" from the Matting tab.", None)
     else:
         if not os.path.exists(mask_dir):
             gr.Warning("No masks to export. Please run \"Track Objects\" first.")
-            return "No masks to export. Please run \"Track Objects\" first."
+            return ("No masks to export. Please run \"Track Objects\" first.", None)
             
         total_masks = sum([len(files) for _, _, files in os.walk(mask_dir)])
         if frame_count*object_count != total_masks:
             gr.Warning("Not all frames have masks. Please run \"Track Objects\".")
-            return "Not all frames have masks. Please run \"Track Objects\"."
+            return ("Not all frames have masks. Please run \"Track Objects\".", None)
 
     images = []
     masks = []
@@ -909,9 +1032,9 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
         fps = float(fps)
     except ValueError:
         gr.Warning("Invalid FPS value. Please enter a number.")
-        return "Invalid FPS value. Please enter a number."
+        return ("Invalid FPS value. Please enter a number.", None)
     # convert float framerates to fraction
-    if isinstance(fps, float):                                                                
+    if isinstance(fps, float):
         if fps == 29.97:
             fps = Fraction(30000, 1001)
         elif fps == 23.976:
@@ -930,11 +1053,20 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
     output = av.open(video_filename, mode='w')
     if type=="Alpha":
         stream = output.add_stream("prores_ks", rate=fps, pix_fmt='yuva444p10le', options={'profile':'4'})
+        stream.width = width
+        stream.height = height
     else: # type=="Matte, Greenscreen"
         stream = output.add_stream('h264', rate=fps, pix_fmt = 'yuv420p', options={"crf": "10"})
-    stream.width = width
-    stream.height = height
-    
+        # For h264, add padding if the resolution is not mod 2
+        if width%2 == 1:
+            stream.width = width + 1
+        else:
+            stream.width = width
+        if height%2 == 1:
+            stream.height = height = 1
+        else: 
+            stream.height = height
+
 
     # read the frames and masks to build an output image
     for frame_number, frame_path in enumerate(images):
@@ -1026,14 +1158,14 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             with open(json_filename, 'r') as f:
                 json_data = json.load(f)
                 points_list = [DataPoint(*point) for point in json_data]
-        if os.path.exists(frames_dir):
+        if os.path.exists(frames_dir) and os.listdir(frames_dir): # if there are frames
             print("Resuming previous session...")
             inference_state = predictor.init_state(video_path=frames_dir, async_loading_frames=True, offload_video_to_cpu=True)
 
     # Define the Gradio components
     with gr.Sidebar():
         gr.Markdown("### Input Video / Settings")
-        video_input = gr.File(label="Upload Video File", file_types=['video', '.mkv'])
+        video_input = gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'])
         model_dropdown = gr.Dropdown(choices=["Auto", "SAM2.1Large (High Quality)", "SAM2.1Base+", "EfficientTAM (Fast)"], value=set_model_dropdown(), label="Segmentation Model", interactive=True)
         matting_quality_dropdown = gr.Dropdown(choices=["480p", "720p", "1080p", "Full"], value=set_matting_quality_dropdown(), label="Matting Max Internal Size", interactive=True)
         cpu_checkbox = gr.Checkbox(label="Force Processing on CPU", value=settings["force_cpu"], interactive=True)
@@ -1114,10 +1246,12 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             - Export object options include "All" to export all objects combined into a single video, or you can select a specific object ID to export.
             """)
         export_fps = gr.Dropdown(choices=[23.976, 24, 29.97, 30], value=str(settings['export_fps']), label="FPS", allow_custom_value=True, interactive=True)
-        export_type = gr.Dropdown(choices=["Matte", "Alpha", "Greenscreen"], label="Export Type", interactive=True)
-        export_content = gr.Dropdown(choices=["Segmentation Mask", "Segmentation with Edge Smoothing", "Matting"], label="Export Content", interactive=True)
+        export_type = gr.Dropdown(choices=["Matte", "Alpha", "Greenscreen"], value=set_export_type_dropdown(), label="Export Type", interactive=True)
+        export_content = gr.Dropdown(choices=["Segmentation Mask", "Segmentation with Edge Smoothing", "Matting"], value=set_export_content_dropdown(), label="Export Content", interactive=True)
         export_object = gr.Dropdown(choices=["All"]+get_objects(), label="Export Object", interactive=True)
-        export_btn = gr.Button(value="Export Video")
+        with gr.Row():
+            export_btn = gr.Button(value="Export Video")
+            export_img_btn = gr.Button(value="Export Image")
         export_status = gr.Textbox(value="", label="Export Status")
         export_download = gr.DownloadButton(label="💾 Download Exported Video", visible=False)
     
@@ -1145,7 +1279,10 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     propagate_btn.click(lock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, video_input, matting_tab, export_tab]).then(propagate_masks, outputs=[frame_slider, image_viewer]).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, video_input, matting_tab, export_tab])
     cancel_propagate_btn.click(cancel_propagation)
     point_viewer.select(change_slider, outputs=[frame_slider, object_id, color_picker], show_progress='hidden')
+    export_type.input(change_export_settings, inputs=[export_type, export_content])
+    export_content.input(change_export_settings, inputs=[export_type, export_content])
     export_btn.click(export_video, inputs=[export_fps, export_type, export_content, export_object], outputs=[export_status, export_download])
+    export_img_btn.click(export_image, inputs=[export_type, export_content, export_object], outputs=[export_status, export_download])
     export_tab.select(update_export_objects, outputs=export_object)
     segmentation_tab.select(sync_sliders, inputs=[frame_slider_mat], outputs=[frame_slider])
     matting_tab.select(sync_sliders, inputs=[frame_slider], outputs=[frame_slider_mat]).then(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
