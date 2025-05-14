@@ -42,6 +42,8 @@ Everything is self-contained in the Sammie-Roto folder. If you want to remove th
 - Execute the following command: `bash install_dependencies.sh` then follow the prompt.
 - MacOS users: double-click "run_sammie.command" to launch the program. Linux users: `bash run_sammie.command` or execute the file however you prefer.
 
+### Tutorial
+[![Sammie-Roto Tutorial](https://img.youtube.com/vi/042uKTqlJ_c/0.jpg)](https://www.youtube.com/watch?v=042uKTqlJ_c)
 
 ### Acknowledgements
 * [SAM 2](https://github.com/facebookresearch/sam2)
