@@ -7,9 +7,6 @@ from .progress_bar import progress_bar
 
 min_similarity_threshold = 0.8 # The compared matte (alpha) frames need to be at least this similar compared to the base matte alpha frame
 max_similarity_threshold = 0.98 # The compared matte (alpha) frame is similar to the point where it doesn't have to be processed / replaced
-temp_dir = "../temp/"
-frames_dir = os.path.join(temp_dir, "frames")
-mask_dir = os.path.join(temp_dir, "masks")
 
 # Use ORB comparison from opencv to compare two input frames/images for similarity
 def orb_comparison(img1, img2):
@@ -44,7 +41,7 @@ def generate_matted_frame(frame_path, mask_dir, frame_number):
     return result_frame
 
 # Replace the masks on disc with a specific "similar frames" list
-def replace_matte_frames(mask_dir, similar_frames):
+def replace_files_similar_mattes(mask_dir, similar_frames):
     last_mask_dir = os.path.join(mask_dir, similar_frames[-1])
     file_list = os.listdir(last_mask_dir)
     for i, frame in enumerate(similar_frames):
@@ -112,7 +109,7 @@ def replace_similar_matte_frames():
                 # If the frames are not similar, break out of the inner loop
                 break
         
-        replace_matte_frames(mask_dir, similar_frames)
+        replace_files_similar_mattes(mask_dir, similar_frames)
         
         # Find the actual index of the last similar frame in the input list and update the frame_index from that point onwards
         last_similar_frame_index = frame_numbers.index(similar_frames[-1])
