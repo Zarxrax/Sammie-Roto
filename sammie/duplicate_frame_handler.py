@@ -3,7 +3,7 @@ import numpy as np
 import os
 import shutil
 import gradio as gr
-from .progress_bar import progress_bar
+from tqdm import tqdm
 
 min_similarity_threshold = 0.8 # The compared matte (alpha) frames need to be at least this similar compared to the base matte alpha frame
 max_similarity_threshold = 0.98 # The compared matte (alpha) frame is similar to the point where it doesn't have to be processed / replaced
@@ -87,15 +87,14 @@ def replace_similar_matte_frames():
     base_frame = generate_matted_frame(start_base_frame_path, mask_dir, frame_numbers[frame_index]) # Frame used for ORB comparison
 
     gr.Info("Deduping matte frames...", duration=3)
-    print("Deduping matte frames...")
-
+    progress = tqdm(total=frames_amount, desc="Deduping matte frames...")
+    
     while True:
-        progress = frame_index / frames_amount
-        progress_bar(progress)
         similar_frames = []
         similar_frames.append(frame_numbers[frame_index])
 
         for next_index in range(frame_index + 1, len(frame_numbers)):
+            progress.update(1)            
             # Load the next frame
             next_frame_path = os.path.join(frames_dir, frame_numbers[next_index] + ".png")
             next_frame = generate_matted_frame(next_frame_path, mask_dir, frame_numbers[next_index])
@@ -117,7 +116,10 @@ def replace_similar_matte_frames():
 
         # Check if all the frames have been processed
         if frame_index >= frames_amount:
-            progress_bar(1)
+            # Force complete progress bar and display info
+            progress.n = frames_amount
+            progress.refresh()
+            progress.close()
             print(f"\nDeduped {deduped_frames_amount} matte frames")
             gr.Info(f"Deduped {deduped_frames_amount} matte frames", duration=5)
             return

@@ -16,7 +16,7 @@ from tqdm import tqdm
 from sammie.smooth import run_smoothing_model, prepare_smoothing_model
 from matanyone.inference.inference_core import InferenceCore
 from matanyone.utils.get_default_model import get_matanyone_model
-from utils.duplicate_frame_handler import replace_similar_matte_frames
+from sammie.duplicate_frame_handler import replace_similar_matte_frames
 
 # .........................................................................................
 # Global variables
@@ -1210,6 +1210,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
                     clear_tracking_btn = gr.Button(value="Clear Tracking Data")
                     clear_all_points_btn = gr.Button(value="Clear All")
                     dedupe_mattes_btn = gr.Button(value="Dedupe Mattes")
+
         with gr.Row():
             post_holes_slider = gr.Slider(minimum=0, maximum=50, value=set_postprocessing_holes_slider(), step=1, label="Remove Holes")
             post_dots_slider = gr.Slider(minimum=0, maximum=50, value=set_postprocessing_dots_slider(), step=1, label="Remove Dots")
