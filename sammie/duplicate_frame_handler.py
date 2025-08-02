@@ -114,6 +114,9 @@ def replace_similar_matte_frames():
         last_similar_frame_index = frame_numbers.index(similar_frames[-1])
         frame_index = last_similar_frame_index + 1
 
+        # Update the amount of deduped frames
+        deduped_frames_amount += (len(similar_frames)-1) # Base frame gets stored in the list as well, hence the subtraction
+
         # Check if all the frames have been processed
         if frame_index >= frames_amount:
             # Force complete progress bar and display info
@@ -124,8 +127,6 @@ def replace_similar_matte_frames():
             gr.Info(f"Deduped {deduped_frames_amount} matte frames", duration=5)
             return
         else:
-            deduped_frames_amount += (len(similar_frames)-1) # Base frame gets stored in the list as well, hence the subtraction
-
             # Load the next frame
             new_base_frame_path = os.path.join(frames_dir, frame_numbers[frame_index] + ".png")
             base_frame = generate_matted_frame(new_base_frame_path, mask_dir, frame_numbers[frame_index])
