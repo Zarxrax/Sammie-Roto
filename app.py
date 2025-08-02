@@ -184,7 +184,8 @@ def load_settings():
     "grow": 0,
     "gamma": 0,
     "grow_matte": 0,
-    "show_outlines": True
+    "show_outlines": True,
+    "dedupe_min_threshold" : 0.8
     }
     try:
         with open("settings.json", 'r') as file:
@@ -1154,6 +1155,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     predictor = load_model()
     frame_count = count_frames()
     mat_processor = load_matting_model()
+    dedupe_min_threshold = settings.get("dedupe_min_threshold")
     save_settings() # save settings in case defaults have not been saved yet
 
     # resume previous session
@@ -1284,7 +1286,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     clear_all_points_btn.click(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
     clear_points_obj_btn.click(clear_points_obj, inputs=[frame_slider, object_id], outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
     clear_all_points_obj_btn.click(clear_all_points_obj, inputs=object_id, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
-    dedupe_mattes_btn.click(lock_ui_dedupe, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_mattes_btn, video_input, matting_tab, export_tab]).then(replace_similar_matte_frames).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_mattes_btn, video_input, matting_tab, export_tab]).then(update_image, inputs=frame_slider, outputs=image_viewer)
+    dedupe_mattes_btn.click(lock_ui_dedupe, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_mattes_btn, video_input, matting_tab, export_tab]).then(lambda: replace_similar_matte_frames(dedupe_min_threshold)).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_mattes_btn, video_input, matting_tab, export_tab]).then(update_image, inputs=frame_slider, outputs=image_viewer)
     propagate_btn.click(lock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_mattes_btn, video_input, matting_tab, export_tab]).then(propagate_masks, outputs=[frame_slider, image_viewer]).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_mattes_btn, video_input, matting_tab, export_tab])
     cancel_propagate_btn.click(cancel_propagation)
     point_viewer.select(change_slider, outputs=[frame_slider, object_id, color_picker], show_progress='hidden')

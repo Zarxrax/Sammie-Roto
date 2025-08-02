@@ -5,9 +5,6 @@ import shutil
 import gradio as gr
 from tqdm import tqdm
 
-min_similarity_threshold = 0.8 # The compared matte (alpha) frames need to be at least this similar compared to the base matte alpha frame
-max_similarity_threshold = 0.98 # The compared matte (alpha) frame is similar to the point where it doesn't have to be processed / replaced
-
 # Use ORB comparison from opencv to compare two input frames/images for similarity
 def orb_comparison(img1, img2):
     orb = cv2.ORB_create()
@@ -58,7 +55,7 @@ def replace_files_similar_mattes(mask_dir, similar_frames):
             shutil.copy(file_path, replace_mask_dir)
 
 # Main function to replace similar (matted) frames with one single matte frame
-def replace_similar_matte_frames():
+def replace_similar_matte_frames(dedupe_min_threshold):
     # Resolve absolute path of file back to project root folder
     utils_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.abspath(os.path.join(utils_dir, ".."))
@@ -106,7 +103,7 @@ def replace_similar_matte_frames():
             
             # Compare the current frame with the next frame
             similarity_score = orb_comparison(base_frame, next_frame)
-            if similarity_score > min_similarity_threshold and similarity_score < max_similarity_threshold:
+            if similarity_score > dedupe_min_threshold:
                 # If the frames are similar enough, add the next checked frame to the similar_frames list
                 similar_frames.append(frame_numbers[next_index])
             else:
