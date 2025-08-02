@@ -26,6 +26,7 @@ def generate_matted_frame(frame_path, mask_dir, frame_number):
     frame_mask_dir = os.path.join(mask_dir, frame_number)
     if not os.path.exists(frame_mask_dir):
         # Warning could not find masks
+        gr.Warning("Missing masks folder for frame: ", frame_number)
         return None
     
     # Create empty mask image
@@ -35,6 +36,10 @@ def generate_matted_frame(frame_path, mask_dir, frame_number):
         matte_path = os.path.join(frame_mask_dir, matte)
         matte_image = cv2.imread(matte_path, cv2.IMREAD_GRAYSCALE)
         mask_image = cv2.bitwise_or(mask_image, matte_image)
+
+    # Check if there is no luma mask for a frame, use the full frame in that case to prevent zero ORB matches (which raised a division by zero error), but does result in zero similarity.
+    if cv2.countNonZero(mask_image) == 0:
+        mask_image = np.ones((frame.shape[0], frame.shape[1]), dtype=np.uint8)
         
     # Use the combined mask image as the overall mask luma matte
     result_frame = cv2.bitwise_and(frame, frame, mask=mask_image)
