@@ -21,7 +21,7 @@ from sammie.duplicate_frame_handler import replace_similar_matte_frames
 # .........................................................................................
 # Global variables
 # .........................................................................................
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 temp_dir = "temp"
 frames_dir = os.path.join(temp_dir, "frames")
 mask_dir = os.path.join(temp_dir, "masks")
@@ -584,13 +584,13 @@ def draw_points(image, frame_number):
     return image
 
 def lock_ui():
-    return [gr.Button(value="Track Objects", visible=False), gr.Button(value="Cancel", visible=True), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.Button(value="Dedupe Mattes", interactive=False), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
+    return [gr.Button(value="Track Objects", visible=False), gr.Button(value="Cancel", visible=True), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.Button(value="Dedupe Masks", interactive=False), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
 
 def lock_ui_dedupe():
-    return [gr.Button(value="Track Objects", interactive=False), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.Button(value="Dedupe Mattes", interactive=False), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
+    return [gr.Button(value="Track Objects", interactive=False), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.Button(value="Dedupe Masks", interactive=False), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
 
 def unlock_ui():
-    return [gr.Button(value="Track Objects", visible=True, interactive=True), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=True), gr.Button(value="Clear Object (frame)", interactive=True), gr.Button(value="Clear Object", interactive=True), gr.Button(value="Clear Tracking Data", interactive=True), gr.Button(value="Clear All", interactive=True), gr.Button(value="Dedupe Mattes", interactive=True), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=True), gr.Tab(label="Matting", visible=True), gr.Tab(label="Export", visible=True)]
+    return [gr.Button(value="Track Objects", visible=True, interactive=True), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=True), gr.Button(value="Clear Object (frame)", interactive=True), gr.Button(value="Clear Object", interactive=True), gr.Button(value="Clear Tracking Data", interactive=True), gr.Button(value="Clear All", interactive=True), gr.Button(value="Dedupe Masks", interactive=True), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=True), gr.Tab(label="Matting", visible=True), gr.Tab(label="Export", visible=True)]
 
 
 def lock_ui_matting():
@@ -1189,7 +1189,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             - Press the \"Track Objects\" button to track the mask across all frames of the video.
             - If you add or remove any points after tracking, the tracking data will be cleared, and you must run tracking again.
             - The sliders at the bottom can be used to make adjustments to the masks.
-            - Optionally press \"Dedupe Mattes\" to handle video masks with duplicate frames. (e.g. anime which has 2/3 still frames every drawing)
+            - Optionally press \"Dedupe Masks\" to suppress edge chatter on duplicated frames, such as with anime/cartoons.
             - When you are satisfied with the result, move to the Export tab at the top to render the video.
             """)
         
@@ -1211,13 +1211,13 @@ with gr.Blocks(title='Sammie-Roto') as demo:
                     cancel_propagate_btn = gr.Button(value="Cancel", visible=False)
                     clear_tracking_btn = gr.Button(value="Clear Tracking Data")
                     clear_all_points_btn = gr.Button(value="Clear All")
-                    dedupe_mattes_btn = gr.Button(value="Dedupe Mattes")
 
         with gr.Row():
             post_holes_slider = gr.Slider(minimum=0, maximum=50, value=set_postprocessing_holes_slider(), step=1, label="Remove Holes")
             post_dots_slider = gr.Slider(minimum=0, maximum=50, value=set_postprocessing_dots_slider(), step=1, label="Remove Dots")
             post_grow_slider = gr.Slider(minimum=-10, maximum=10, value=set_postprocessing_grow_slider(), step=1, label="Shrink/Grow")
             show_outlines_checkbox = gr.Checkbox(label="Show Outlines", value=set_show_outlines(), interactive=True)
+            dedupe_masks_btn = gr.Button(value="Dedupe Masks")
         with gr.Accordion(label="Point List", open=False):
             point_viewer = gr.Dataframe(
                     headers=["Frame", "ObjectID", "Positive", "X", "Y"],
@@ -1286,8 +1286,8 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     clear_all_points_btn.click(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
     clear_points_obj_btn.click(clear_points_obj, inputs=[frame_slider, object_id], outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
     clear_all_points_obj_btn.click(clear_all_points_obj, inputs=object_id, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
-    dedupe_mattes_btn.click(lock_ui_dedupe, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_mattes_btn, video_input, matting_tab, export_tab]).then(lambda: replace_similar_matte_frames(dedupe_min_threshold)).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_mattes_btn, video_input, matting_tab, export_tab]).then(update_image, inputs=frame_slider, outputs=image_viewer)
-    propagate_btn.click(lock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_mattes_btn, video_input, matting_tab, export_tab]).then(propagate_masks, outputs=[frame_slider, image_viewer]).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_mattes_btn, video_input, matting_tab, export_tab])
+    dedupe_masks_btn.click(lock_ui_dedupe, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, matting_tab, export_tab]).then(lambda: replace_similar_matte_frames(dedupe_min_threshold)).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, matting_tab, export_tab]).then(update_image, inputs=frame_slider, outputs=image_viewer)
+    propagate_btn.click(lock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, matting_tab, export_tab]).then(propagate_masks, outputs=[frame_slider, image_viewer]).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, matting_tab, export_tab])
     cancel_propagate_btn.click(cancel_propagation)
     point_viewer.select(change_slider, outputs=[frame_slider, object_id, color_picker], show_progress='hidden')
     export_type.input(change_export_settings, inputs=[export_type, export_content])

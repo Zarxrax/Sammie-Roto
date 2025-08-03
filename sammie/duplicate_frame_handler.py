@@ -88,8 +88,8 @@ def replace_similar_matte_frames(dedupe_min_threshold):
     start_base_frame_path = os.path.join(frames_dir, frame_numbers[frame_index] + ".png")
     base_frame = generate_matted_frame(start_base_frame_path, mask_dir, frame_numbers[frame_index]) # Frame used for ORB comparison
 
-    gr.Info("Deduping matte frames...", duration=3)
-    progress = tqdm(total=frames_amount, desc="Deduping matte frames...")
+    gr.Info("Deduping mask frames...", duration=3)
+    progress = tqdm(total=frames_amount, desc="Deduping mask frames...")
     
     while True:
         similar_frames = []
@@ -125,8 +125,8 @@ def replace_similar_matte_frames(dedupe_min_threshold):
             progress.n = frames_amount
             progress.refresh()
             progress.close()
-            print(f"\nDeduped {deduped_frames_amount} matte frames")
-            gr.Info(f"Deduped {deduped_frames_amount} matte frames", duration=5)
+            print(f"\nDeduped {deduped_frames_amount} mask frames")
+            gr.Info(f"Deduped {deduped_frames_amount} mask frames", duration=5)
             return
         else:
             # Load the next frame
