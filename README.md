@@ -6,9 +6,8 @@
 
 Sammie-Roto is designed to be a user-friendly tool for AI assisted masking of video clips. It serves as a free alternative to commercial solutions such as Adobe’s Roto Brush or DaVinci Resolve's Magic Mask. It is generally less accurate than manual rotoscoping, but can usually give a pretty good result with little effort.
 
-You may also be interested in another similar tool that I created, [Cutie-Roto](https://github.com/Zarxrax/Cutie-Roto). While Cutie-Roto and Sammie-Roto both serve a similar purpose, their internal workings are different, so each one might work better in certain situations.
-
 ### Updates
+- [08/03/2025] Added deduplication to reduce chatter around edges on anime content.
 - [05/10/2025] Added support for importing/exporting single images. Export settings are now remembered.
 - [04/23/2025] Added installer for Linux/Mac, reduced VRAM consumption, several improvements and bug fixes
 - [04/04/2025] Added some adjustment sliders to the Matting page.
@@ -24,6 +23,7 @@ You may also be interested in another similar tool that I created, [Cutie-Roto](
 - Easy to use interface.
 - Multi-object support.
 - Various mask postprocessing options, including edge-smoothing.
+- Supports deduplication to reduce chatter around edges on anime content.
 - Multiple export options: Black and White Matte, Alpha channel, and Greenscreen.
 
 ### Installation (Windows):
