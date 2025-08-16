@@ -21,7 +21,7 @@ from sammie.duplicate_frame_handler import replace_similar_matte_frames
 # .........................................................................................
 # Global variables
 # .........................................................................................
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 temp_dir = "temp"
 frames_dir = os.path.join(temp_dir, "frames")
 mask_dir = os.path.join(temp_dir, "masks")
@@ -151,10 +151,11 @@ def change_export_settings(export_type_dropdown, export_content_dropdown):
     save_settings()
 
 # Save settings if user changes the postprocessing settings
-def change_postprocessing(post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider):
+def change_postprocessing(post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider):
     settings["holes"] = post_holes_slider
     settings["dots"] = post_dots_slider
     settings["grow"] = post_grow_slider
+    settings["border"] = post_border_slider
     settings["show_outlines"] = show_outlines_checkbox
     settings["gamma"] = post_gamma_slider
     settings["grow_matte"] = post_grow_matte_slider
@@ -164,11 +165,12 @@ def reset_postprocessing():
     settings["holes"] = 0
     settings["dots"] = 0
     settings["grow"] = 0
+    settings["border"] = 0
     settings["gamma"] = 1
     settings["grow_matte"] = 0
     settings["show_outlines"] = True
     save_settings()
-    return [gr.Slider(minimum=0, maximum=50, value=0, step=1, label="Remove Holes"), gr.Slider(minimum=0, maximum=50, value=0, step=1, label="Remove Dots"), gr.Slider(minimum=-10, maximum=10, value=0, step=1, label="Shrink/Grow"), gr.Checkbox(label="Show Outlines", value=True, interactive=True), gr.Slider(minimum=0.01, maximum=10, value=1, step=0.01, label="Gamma"), gr.Slider(minimum=-10, maximum=10, value=0, step=1, label="Shrink/Grow")]
+    return [gr.Slider(minimum=0, maximum=50, value=0, step=1, label="Remove Holes"), gr.Slider(minimum=0, maximum=50, value=0, step=1, label="Remove Dots"), gr.Slider(minimum=-10, maximum=10, value=0, step=1, label="Shrink/Grow"), gr.Slider(minimum=0, maximum=10, value=0, step=1, label="Border Fix"), gr.Checkbox(label="Show Outlines", value=True, interactive=True), gr.Slider(minimum=0.01, maximum=10, value=1, step=0.01, label="Gamma"), gr.Slider(minimum=-10, maximum=10, value=0, step=1, label="Shrink/Grow")]
 
 # Load settings from json file
 def load_settings():
@@ -182,6 +184,7 @@ def load_settings():
     "holes": 0,
     "dots": 0,
     "grow": 0,
+    "border": 0,
     "gamma": 0,
     "grow_matte": 0,
     "show_outlines": True,
@@ -254,6 +257,9 @@ def set_postprocessing_dots_slider():
 
 def set_postprocessing_grow_slider():
     return settings["grow"]
+
+def set_postprocessing_border_slider():
+    return settings["border"]
 
 def set_postprocessing_gamma_slider():
     return settings["gamma"]
@@ -479,6 +485,7 @@ def draw_masks(image, frame_number):
                 mask = fill_small_holes(mask)
                 mask = remove_small_dots(mask)
                 mask = grow_shrink(mask)
+                mask = border_fix(mask)
 
                 # Get the color from the palette (cycle through if needed)
                 color = PALETTE[object_id % len(PALETTE)]
@@ -513,6 +520,7 @@ def draw_contours(image, frame_number):
                 mask = fill_small_holes(mask)
                 mask = remove_small_dots(mask)
                 mask = grow_shrink(mask)
+                mask = border_fix(mask)
 
                 # Resize mask if dimensions don't match
                 if mask.shape != (image.shape[0], image.shape[1]):
@@ -573,6 +581,18 @@ def grow_shrink(mask):
         return cv2.erode(mask, kernel, iterations=1)
     else:
         return mask
+
+def border_fix(mask):
+    border_size = settings["border"]
+    if border_size == 0:
+        return mask
+    else: 
+        height, width = mask.shape
+        y_start = border_size
+        y_end = height - border_size
+        x_start = border_size
+        x_end = width - border_size
+        return cv2.copyMakeBorder(mask[y_start:y_end, x_start:x_end], border_size, border_size, border_size, border_size, cv2.BORDER_REPLICATE, value=None)
 
 # Draw points on the current frame
 def draw_points(image, frame_number):
@@ -1216,8 +1236,10 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             post_holes_slider = gr.Slider(minimum=0, maximum=50, value=set_postprocessing_holes_slider(), step=1, label="Remove Holes")
             post_dots_slider = gr.Slider(minimum=0, maximum=50, value=set_postprocessing_dots_slider(), step=1, label="Remove Dots")
             post_grow_slider = gr.Slider(minimum=-10, maximum=10, value=set_postprocessing_grow_slider(), step=1, label="Shrink/Grow")
-            show_outlines_checkbox = gr.Checkbox(label="Show Outlines", value=set_show_outlines(), interactive=True)
-            dedupe_masks_btn = gr.Button(value="Dedupe Masks")
+            post_border_slider = gr.Slider(minimum=0, maximum=10, value=set_postprocessing_border_slider(), step=1, label="Border Fix")
+            with gr.Column():
+                show_outlines_checkbox = gr.Checkbox(label="Show Outlines", value=set_show_outlines(), interactive=True)
+                dedupe_masks_btn = gr.Button(value="Dedupe Masks")
         with gr.Accordion(label="Point List", open=False):
             point_viewer = gr.Dataframe(
                     headers=["Frame", "ObjectID", "Positive", "X", "Y"],
@@ -1266,18 +1288,19 @@ with gr.Blocks(title='Sammie-Roto') as demo:
         export_download = gr.DownloadButton(label="💾 Download Exported Video", visible=False)
     
     # Define the event listeners
-    video_input.upload(process_and_enable_slider, inputs=video_input, outputs=[frame_slider, frame_slider_mat, export_fps]).then(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer).then(reset_postprocessing, outputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider])
+    video_input.upload(process_and_enable_slider, inputs=video_input, outputs=[frame_slider, frame_slider_mat, export_fps]).then(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer).then(reset_postprocessing, outputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider])
     model_dropdown.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
     matting_quality_dropdown.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
     cpu_checkbox.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
     load_points_btn.upload(load_points, inputs=load_points_btn, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
     save_points_btn.click(save_points)
-    post_holes_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
-    post_dots_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
-    post_grow_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
-    show_outlines_checkbox.change(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
-    post_gamma_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
-    post_grow_matte_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
+    post_holes_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider,show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
+    post_dots_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
+    post_grow_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
+    post_border_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
+    show_outlines_checkbox.change(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
+    post_gamma_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
+    post_grow_matte_slider.input(change_postprocessing, inputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
     frame_slider.change(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
     image_viewer.select(add_point, inputs=[frame_slider, object_id, point_type], outputs=point_viewer, show_progress='hidden').then(update_image, inputs=frame_slider, outputs=image_viewer, show_progress='hidden')
     object_id.change(update_color, inputs=object_id, outputs=color_picker, show_progress='hidden')
