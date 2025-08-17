@@ -21,7 +21,7 @@ from sammie.duplicate_frame_handler import replace_similar_matte_frames
 # .........................................................................................
 # Global variables
 # .........................................................................................
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 temp_dir = "temp"
 frames_dir = os.path.join(temp_dir, "frames")
 mask_dir = os.path.join(temp_dir, "masks")
@@ -972,6 +972,7 @@ def export_image(type, content, object):
                 current_mask = fill_small_holes(current_mask)
                 current_mask = remove_small_dots(current_mask)
                 current_mask = grow_shrink(current_mask)
+                current_mask = border_fix(current_mask)
             elif content == "Matting":
                 current_mask = gamma(current_mask)
                 current_mask = grow_shrink_matte(current_mask)
@@ -989,6 +990,7 @@ def export_image(type, content, object):
             mask = fill_small_holes(mask)
             mask = remove_small_dots(mask)
             mask = grow_shrink(mask)
+            mask = border_fix(current_mask)
         elif content == "Matting":
             mask = gamma(mask)
             mask = grow_shrink_matte(mask)
@@ -1111,6 +1113,7 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
                     current_mask = fill_small_holes(current_mask)
                     current_mask = remove_small_dots(current_mask)
                     current_mask = grow_shrink(current_mask)
+                    current_mask = border_fix(current_mask)
                 elif content == "Matting":
                     current_mask = gamma(current_mask)
                     current_mask = grow_shrink_matte(current_mask)
@@ -1128,6 +1131,7 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
                 mask = fill_small_holes(mask)
                 mask = remove_small_dots(mask)
                 mask = grow_shrink(mask)
+                mask = border_fix(current_mask)
             elif content == "Matting":
                 mask = gamma(mask)
                 mask = grow_shrink_matte(mask)
