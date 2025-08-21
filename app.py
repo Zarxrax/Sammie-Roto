@@ -990,7 +990,7 @@ def export_image(type, content, object):
             mask = fill_small_holes(mask)
             mask = remove_small_dots(mask)
             mask = grow_shrink(mask)
-            mask = border_fix(current_mask)
+            mask = border_fix(mask)
         elif content == "Matting":
             mask = gamma(mask)
             mask = grow_shrink_matte(mask)
@@ -1131,7 +1131,7 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
                 mask = fill_small_holes(mask)
                 mask = remove_small_dots(mask)
                 mask = grow_shrink(mask)
-                mask = border_fix(current_mask)
+                mask = border_fix(mask)
             elif content == "Matting":
                 mask = gamma(mask)
                 mask = grow_shrink_matte(mask)
