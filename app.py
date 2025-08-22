@@ -1433,7 +1433,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
         export_download = gr.DownloadButton(label="💾 Download Exported Video", visible=False)
     
     # Define the event listeners
-    video_input.upload(process_and_enable_slider, inputs=video_input, outputs=[frame_slider, frame_slider_mat, export_fps]).then(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer).then(reset_postprocessing, outputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(lambda: build_video_filename(), outputs=preview_filename)
+    video_input.upload(process_and_enable_slider, inputs=video_input, outputs=[frame_slider, frame_slider_mat, export_fps]).then(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer).then(reset_postprocessing, outputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(lambda: "All", outputs=export_object).then(lambda: build_video_filename(), outputs=preview_filename)
     model_dropdown.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
     matting_quality_dropdown.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
     cpu_checkbox.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
