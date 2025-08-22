@@ -416,6 +416,8 @@ def process_video(video_file, progress=gr.Progress()):
 
 # Function to call process_video and get the frame count, then set up the slider to use that number of frames, also update the fps in the export tab
 def process_and_enable_slider(video_file):
+    settings['export_object'] = "All"  # reset the export object to All when a new input file is uploaded
+    save_settings()
     frame_count = process_video(video_file)
     return [gr.Slider(minimum=0,maximum=frame_count-1, value=0, step=1, label="Frame Number"), gr.Slider(minimum=0,maximum=frame_count-1, value=0, step=1, label="Frame Number"), gr.Dropdown(choices=[23.976, 24, 29.97, 30], value=str(settings['export_fps']), label="FPS", allow_custom_value=True, interactive=True)]
 
