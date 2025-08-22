@@ -819,20 +819,6 @@ def clear_all_points_obj(object_id):
             predictor.reset_state(inference_state)
     return points_list
 
-# Function to clear all produced output files in the temp directory
-def clean_output_files():
-    extensions = ('.mov', '.mp4', '.png')
-    removed_files = []
-    for filename in os.listdir(temp_dir):
-        if filename.lower().endswith(extensions):
-            file_path = os.path.join(temp_dir, filename)
-            try:
-                os.remove(file_path)
-                removed_files.append(filename)
-            except Exception as e:
-                print(f"Error removing {filename}: {e}")
-    return
-
 # Change the color displayed in the interface to indicate the current object
 def update_color(object_id):
     color = '#%02x%02x%02x' % PALETTE[object_id % len(PALETTE)] # convert color palette to hex
@@ -1059,7 +1045,6 @@ def update_export_objects():
     return gr.Dropdown(choices=["All"]+get_objects(), label="Export Object", interactive=True)
 
 def export_image(type, content, object):
-    clean_output_files()
     object_ids = get_objects()
     img = None
     mask = None
@@ -1138,7 +1123,6 @@ def export_image(type, content, object):
     return (f"Exported image to {image_filename}", gr.DownloadButton(label="💾 Download Exported Image", value=image_filename, visible=True))
 
 def export_video(fps, type, content, object, progress=gr.Progress()):
-    clean_output_files()
     frame_count = count_frames()
     total_masks = 0
     object_ids = get_objects()
