@@ -219,8 +219,9 @@ def load_session():
     default_session = {
         "input_file_name": os.path.join(temp_dir, "output"),
         "name_roto": True,
-        "name_object": False,
         "name_type": False,
+        "name_content" : False,
+        "name_object": False,
         "name_date_time": False
     }
     try:
@@ -275,10 +276,16 @@ def build_video_filename():
         export_type = settings.get("export_type", "Matte")
         filename_parts.append(export_type)
     
+    # Add content if enabled
+    if session.get("name_content", False):
+        export_content = settings.get("export_content", "Segmentation Mask")
+        export_content = export_content.replace(" ", "_")  # Replace spaces with underscores
+        filename_parts.append(export_content)
+
     # Add object if enabled
     if session.get("name_object", False):
         export_object = settings.get("export_object", "All")
-        export_object = str(export_object)  # Ensure it's a string
+        export_object = str(export_object)  # Ensure it's a string for the number values
         filename_parts.append(export_object)
     
     # Add date & time if enabled
@@ -299,6 +306,12 @@ def update_name_roto(checked):
 def update_name_type(checked):
     global session
     session["name_type"] = checked
+    save_session()
+    return build_video_filename()
+
+def update_name_content(checked):
+    global session
+    session["name_content"] = checked
     save_session()
     return build_video_filename()
 
@@ -1414,7 +1427,11 @@ with gr.Blocks(title='Sammie-Roto') as demo:
                     value=session.get("name_type", False), 
                     interactive=True
                 )
-            with gr.Row():
+                name_content_checkbox = gr.Checkbox(
+                    label="Add content type", 
+                    value=session.get("name_content", False), 
+                    interactive=True
+                )
                 name_object_checkbox = gr.Checkbox(
                     label="Add layer/object ID", 
                     value=session.get("name_object", False), 
@@ -1460,7 +1477,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     point_viewer.select(change_slider, outputs=[frame_slider, object_id, color_picker], show_progress='hidden')
     export_type.input(change_export_settings, inputs=[export_type, export_content, export_object]).then(build_video_filename, outputs=preview_filename)
     export_object.input(change_export_settings, inputs=[export_type, export_content, export_object]).then(build_video_filename, outputs=preview_filename)
-    export_content.input(change_export_settings, inputs=[export_type, export_content, export_object])
+    export_content.input(change_export_settings, inputs=[export_type, export_content, export_object]).then(build_video_filename, outputs=preview_filename)
     export_btn.click(export_video, inputs=[export_fps, export_type, export_content, export_object], outputs=[export_status, export_download])
     export_img_btn.click(export_image, inputs=[export_type, export_content, export_object], outputs=[export_status, export_download])
     export_tab.select(update_export_objects, outputs=export_object)
@@ -1473,6 +1490,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
 
     name_roto_checkbox.change(update_name_roto, inputs=name_roto_checkbox, outputs=preview_filename)
     name_type_checkbox.change(update_name_type, inputs=name_type_checkbox, outputs=preview_filename)
+    name_content_checkbox.change(update_name_content, inputs=name_content_checkbox, outputs=preview_filename)
     name_object_checkbox.change(update_name_object, inputs=name_object_checkbox, outputs=preview_filename)
     name_date_time_checkbox.change(update_name_date_time, inputs=name_date_time_checkbox, outputs=preview_filename)
 
