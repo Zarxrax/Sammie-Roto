@@ -217,7 +217,7 @@ def save_settings():
 # Load session from json file (create if missing)
 def load_session():
     default_session = {
-        "input_file_name": os.path.join(temp_dir, "output"),
+        "input_file_name": "output",
         "name_roto": True,
         "name_type": False,
         "name_content" : False,
