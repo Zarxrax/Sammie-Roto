@@ -22,7 +22,7 @@ from sammie.duplicate_frame_handler import replace_similar_matte_frames
 # .........................................................................................
 # Global variables
 # .........................................................................................
-__version__ = "1.6.1"
+__version__ = "1.7.0"
 temp_dir = "temp"
 frames_dir = os.path.join(temp_dir, "frames")
 mask_dir = os.path.join(temp_dir, "masks")
