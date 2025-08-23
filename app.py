@@ -13,6 +13,7 @@ from packaging import version
 from collections import namedtuple
 from fractions import Fraction
 from tqdm import tqdm
+from datetime import datetime
 from sammie.smooth import run_smoothing_model, prepare_smoothing_model
 from matanyone.inference.inference_core import InferenceCore
 from matanyone.utils.get_default_model import get_matanyone_model
@@ -27,6 +28,7 @@ frames_dir = os.path.join(temp_dir, "frames")
 mask_dir = os.path.join(temp_dir, "masks")
 matting_dir = os.path.join(temp_dir, "matting")
 settings = None
+session = None
 edge_smoothing = False
 device = None
 propagated = False # whether we have propagated the masks
@@ -119,7 +121,6 @@ def start_update_check(repo="Zarxrax/Sammie-Roto", timeout=5):
             pass  # Fail silently, no impact on startup
     threading.Thread(target=background_check, daemon=True).start()
 
-
 # Save settings if the user changes the settings
 def change_settings(model_dropdown, matting_quality_dropdown, cpu_checkbox):
     if model_dropdown == "Auto":
@@ -145,9 +146,10 @@ def change_settings(model_dropdown, matting_quality_dropdown, cpu_checkbox):
     save_settings()
     gr.Info("You must restart the application for changes to take effect.")
 
-def change_export_settings(export_type_dropdown, export_content_dropdown):
+def change_export_settings(export_type_dropdown, export_content_dropdown, export_object_dropdown):
     settings["export_type"] = export_type_dropdown
     settings["export_content"] = export_content_dropdown
+    settings["export_object"] = export_object_dropdown
     save_settings()
 
 # Save settings if user changes the postprocessing settings
@@ -181,6 +183,7 @@ def load_settings():
     "export_fps": 24,
     "export_type": "Matte",
     "export_content": "Segmentation Mask",
+    "export_object": "All",
     "holes": 0,
     "dots": 0,
     "grow": 0,
@@ -211,6 +214,41 @@ def save_settings():
     except Exception as e:
         print(f"Error saving settings: {e}")
 
+# Load session from json file (create if missing)
+def load_session():
+    default_session = {
+        "input_file_name": "output",
+        "name_roto": True,
+        "name_type": False,
+        "name_content" : False,
+        "name_object": False,
+        "name_date_time": False
+    }
+    try:
+        with open("session.json", 'r') as file:
+            user_session = json.load(file)
+            merged_session = {**default_session, **user_session}
+            return merged_session
+    except FileNotFoundError:
+        # Create session.json with defaults
+        try:
+            with open("session.json", 'w') as file:
+                json.dump(default_session, file, indent=4)
+        except Exception as e:
+            print(f"Error creating session.json: {e}")
+        return default_session
+    except json.JSONDecodeError:
+        print("Error decoding session.json. Using default session values.")
+        return default_session
+
+# Save session to json file
+def save_session():
+    try:
+        with open("session.json", 'w') as file:
+            json.dump(session, file, indent=4)
+    except Exception as e:
+        print(f"Error saving session: {e}")
+
 # Setup the values for the model dropdown box based on the settings file
 def set_model_dropdown():
     if settings["segmentation_model"] == "auto":
@@ -221,7 +259,74 @@ def set_model_dropdown():
         return "SAM2.1Base+"
     elif settings["segmentation_model"] == "efficient":
         return "EfficientTAM (Fast)"
+
+# Function to build video filename based on session settings and export options
+def build_video_filename():
+    global session
     
+    # Start with input filename
+    filename_parts = [session.get("input_file_name", "output")]
+    
+    # Add roto if enabled
+    if session.get("name_roto", True):
+        filename_parts.append("SammieRoto")
+    
+    # Add type if enabled
+    if session.get("name_type", False):
+        export_type = settings.get("export_type", "Matte")
+        filename_parts.append(export_type)
+    
+    # Add content if enabled
+    if session.get("name_content", False):
+        export_content = settings.get("export_content", "Segmentation Mask")
+        export_content = export_content.replace(" ", "_")  # Replace spaces with underscores
+        filename_parts.append(export_content)
+
+    # Add object if enabled
+    if session.get("name_object", False):
+        export_object = settings.get("export_object", "All")
+        export_object = str(export_object)  # Ensure it's a string for the number values
+        filename_parts.append(export_object)
+    
+    # Add date & time if enabled
+    if session.get("name_date_time", False):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename_parts.append(timestamp)
+    
+    # Join all parts with underscores
+    return "_".join(filename_parts)
+
+# Functions to handle name option checkbox changes
+def update_name_roto(checked):
+    global session
+    session["name_roto"] = checked
+    save_session()
+    return build_video_filename()
+
+def update_name_type(checked):
+    global session
+    session["name_type"] = checked
+    save_session()
+    return build_video_filename()
+
+def update_name_content(checked):
+    global session
+    session["name_content"] = checked
+    save_session()
+    return build_video_filename()
+
+def update_name_object(checked):
+    global session
+    session["name_object"] = checked
+    save_session()
+    return build_video_filename()
+
+def update_name_date_time(checked):
+    global session
+    session["name_date_time"] = checked
+    save_session()
+    return build_video_filename()
+
 # Setup the values for the matting quality dropdown box based on the settings file
 def set_matting_quality_dropdown():
     if settings["matting_quality"] == 480:
@@ -279,8 +384,15 @@ def clear_cache():
 
 # Function to process the video and save frames as PNGs
 def process_video(video_file, progress=gr.Progress()):
-    global inference_state
+    global inference_state, session
     inference_state = None # empty out the inference state if its populated
+
+    # Extract filename without extension and store in session
+    if video_file and hasattr(video_file, 'name'):
+        filename = os.path.basename(video_file.name)
+        filename_without_ext = os.path.splitext(filename)[0]
+        session["input_file_name"] = filename_without_ext
+        save_session()
 
     # Create temp directories to save the frames, delete if already exists
     if os.path.exists(temp_dir):
@@ -317,6 +429,8 @@ def process_video(video_file, progress=gr.Progress()):
 
 # Function to call process_video and get the frame count, then set up the slider to use that number of frames, also update the fps in the export tab
 def process_and_enable_slider(video_file):
+    settings['export_object'] = "All"  # reset the export object to All when a new input file is uploaded
+    save_settings()
     frame_count = process_video(video_file)
     return [gr.Slider(minimum=0,maximum=frame_count-1, value=0, step=1, label="Frame Number"), gr.Slider(minimum=0,maximum=frame_count-1, value=0, step=1, label="Frame Number"), gr.Dropdown(choices=[23.976, 24, 29.97, 30], value=str(settings['export_fps']), label="FPS", allow_custom_value=True, interactive=True)]
 
@@ -950,7 +1064,10 @@ def export_image(type, content, object):
     img = None
     mask = None
     frame_path = os.path.join(frames_dir, "0000.png")
-    image_filename = os.path.join(temp_dir, "output.png")
+    
+    # Build dynamic filename based on session settings
+    base_filename = build_video_filename()
+    image_filename = os.path.join(temp_dir, f"{base_filename}.png")
 
     if content == "Matting":
         if not os.path.exists(os.path.join(matting_dir, "0000")):
@@ -1051,10 +1168,13 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
         if os.path.exists(image_filename):
             images.append(image_filename)
     height, width, _ = cv2.imread(images[0]).shape
+    
+    # Build dynamic filename based on session settings
+    base_filename = build_video_filename()
     if type=="Alpha":
-        video_filename = os.path.join(temp_dir, "output.mov")
-    else: # type=="Matte"
-        video_filename = os.path.join(temp_dir, "output.mp4")
+        video_filename = os.path.join(temp_dir, f"{base_filename}.mov")
+    else: # type=="Matte, Greenscreen"
+        video_filename = os.path.join(temp_dir, f"{base_filename}.mp4")
 
     try:
         fps = float(fps)
@@ -1175,6 +1295,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
 
     start_update_check()
     settings = load_settings()
+    session = load_session()
     device = setup_cuda()
     predictor = load_model()
     frame_count = count_frames()
@@ -1280,11 +1401,48 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             - Export content options include "Segmentation Mask", "Segmentation with Edge Smoothing", and "Matting". The edge smoothing option will run the segmentation masks through an antialiasing model to smooth out the edges.
             - The postprocessing options at the bottom of the segmentation page or the matting page will affect the result, so make sure they are set correctly before exporting.
             - Export object options include "All" to export all objects combined into a single video, or you can select a specific object ID to export.
-            """)
+            - In the file naming options, you can choose to add the SammieRoto suffix, object ID, export type and date & time to the filename. The preview filename will update automatically based on your selections.
+            - If you want to give the file a custom name, you can do so after exporting and then clicking the download button.
+            """)        
         export_fps = gr.Dropdown(choices=[23.976, 24, 29.97, 30], value=str(settings['export_fps']), label="FPS", allow_custom_value=True, interactive=True)
         export_type = gr.Dropdown(choices=["Matte", "Alpha", "Greenscreen"], value=set_export_type_dropdown(), label="Export Type", interactive=True)
         export_content = gr.Dropdown(choices=["Segmentation Mask", "Segmentation with Edge Smoothing", "Matting"], value=set_export_content_dropdown(), label="Export Content", interactive=True)
         export_object = gr.Dropdown(choices=["All"]+get_objects(), label="Export Object", interactive=True)
+        
+        # Name section
+        with gr.Accordion(label="File Naming Options", open=True):
+            preview_filename = gr.Textbox(
+                value=build_video_filename() if session else "No file uploaded",
+                label="Preview Filename",
+                interactive=False
+            )
+            with gr.Row():
+                name_roto_checkbox = gr.Checkbox(
+                    label="Add SammieRoto", 
+                    value=session.get("name_roto", True), 
+                    interactive=True
+                )
+                name_type_checkbox = gr.Checkbox(
+                    label="Add export type", 
+                    value=session.get("name_type", False), 
+                    interactive=True
+                )
+                name_content_checkbox = gr.Checkbox(
+                    label="Add content type", 
+                    value=session.get("name_content", False), 
+                    interactive=True
+                )
+                name_object_checkbox = gr.Checkbox(
+                    label="Add layer/object ID", 
+                    value=session.get("name_object", False), 
+                    interactive=True
+                )
+                name_date_time_checkbox = gr.Checkbox(
+                    label="Add date & time", 
+                    value=session.get("name_date_time", False), 
+                    interactive=True
+                )
+        
         with gr.Row():
             export_btn = gr.Button(value="Export Video")
             export_img_btn = gr.Button(value="Export Image")
@@ -1292,7 +1450,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
         export_download = gr.DownloadButton(label="💾 Download Exported Video", visible=False)
     
     # Define the event listeners
-    video_input.upload(process_and_enable_slider, inputs=video_input, outputs=[frame_slider, frame_slider_mat, export_fps]).then(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer).then(reset_postprocessing, outputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider])
+    video_input.upload(process_and_enable_slider, inputs=video_input, outputs=[frame_slider, frame_slider_mat, export_fps]).then(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer).then(reset_postprocessing, outputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(lambda: "All", outputs=export_object).then(lambda: build_video_filename(), outputs=preview_filename)
     model_dropdown.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
     matting_quality_dropdown.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
     cpu_checkbox.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
@@ -1317,8 +1475,9 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     propagate_btn.click(lock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, matting_tab, export_tab]).then(propagate_masks, outputs=[frame_slider, image_viewer]).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, matting_tab, export_tab])
     cancel_propagate_btn.click(cancel_propagation)
     point_viewer.select(change_slider, outputs=[frame_slider, object_id, color_picker], show_progress='hidden')
-    export_type.input(change_export_settings, inputs=[export_type, export_content])
-    export_content.input(change_export_settings, inputs=[export_type, export_content])
+    export_type.input(change_export_settings, inputs=[export_type, export_content, export_object]).then(build_video_filename, outputs=preview_filename)
+    export_object.input(change_export_settings, inputs=[export_type, export_content, export_object]).then(build_video_filename, outputs=preview_filename)
+    export_content.input(change_export_settings, inputs=[export_type, export_content, export_object]).then(build_video_filename, outputs=preview_filename)
     export_btn.click(export_video, inputs=[export_fps, export_type, export_content, export_object], outputs=[export_status, export_download])
     export_img_btn.click(export_image, inputs=[export_type, export_content, export_object], outputs=[export_status, export_download])
     export_tab.select(update_export_objects, outputs=export_object)
@@ -1328,6 +1487,12 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     viewer_output_radio.change(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
     matting_btn.click(lock_ui_matting, outputs=[matting_btn, cancel_matting_btn, viewer_output_radio, video_input, segmentation_tab, export_tab]).then(run_matting, inputs=frame_slider_mat, outputs=frame_slider_mat).then(unlock_ui_matting, outputs=[matting_btn, cancel_matting_btn, viewer_output_radio, video_input, segmentation_tab, export_tab])
     cancel_matting_btn.click(cancel_matting)
+
+    name_roto_checkbox.change(update_name_roto, inputs=name_roto_checkbox, outputs=preview_filename)
+    name_type_checkbox.change(update_name_type, inputs=name_type_checkbox, outputs=preview_filename)
+    name_content_checkbox.change(update_name_content, inputs=name_content_checkbox, outputs=preview_filename)
+    name_object_checkbox.change(update_name_object, inputs=name_object_checkbox, outputs=preview_filename)
+    name_date_time_checkbox.change(update_name_date_time, inputs=name_date_time_checkbox, outputs=preview_filename)
 
     # when the app loads, update the image
     demo.load(fn=update_image, inputs=frame_slider, outputs=image_viewer)
