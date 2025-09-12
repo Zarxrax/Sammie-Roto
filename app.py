@@ -9,6 +9,7 @@ import av
 import torch
 import requests
 import threading
+import zipfile
 from packaging import version
 from collections import namedtuple
 from fractions import Fraction
@@ -1137,6 +1138,132 @@ def export_image(type, content, object):
     cv2.imwrite(image_filename, img)
     return (f"Exported image to {image_filename}", gr.DownloadButton(label="💾 Download Exported Image", value=image_filename, visible=True))
 
+def export_png_sequence(type, content, object, progress=gr.Progress()):
+    """
+    Export all frames as a sequence of PNG files with transparency
+    """
+    frame_count = count_frames()
+    object_ids = get_objects()
+    
+    # Build dynamic filename based on session settings
+    base_filename = build_video_filename()
+    output_dir = os.path.join(temp_dir, f"{base_filename}_png_sequence")
+    
+    # Create output directory
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+    os.makedirs(output_dir)
+    
+    # Determine which mask folder to use
+    if content == "Matting":
+        if not os.path.exists(matting_dir):
+            gr.Warning("No mattes to export. Please \"Run Matting\" from the Matting tab first.")
+            return ("No mattes to export. Please \"Run Matting\" from the Matting tab first.", None)
+        mask_base_dir = matting_dir
+    else:
+        if not os.path.exists(mask_dir):
+            gr.Warning("No masks to export. Please create masks first.")
+            return ("No masks to export. Please create masks first.", None)
+        mask_base_dir = mask_dir
+    
+    # Check if edge smoothing is needed
+    if content == "Segmentation with Edge Smoothing":
+        smoothing_model = prepare_smoothing_model("./checkpoints/1x_binary_mask_smooth.pth", device)
+    
+    # Process each frame
+    exported_files = []
+    progress(0, desc="Exporting PNG sequence...")
+    
+    for frame_number in range(frame_count):
+        frame_path = os.path.join(frames_dir, f"{frame_number:04d}.png")
+        mask_folder = os.path.join(mask_base_dir, f"{frame_number:04d}")
+        
+        if not os.path.exists(frame_path):
+            continue
+            
+        # Read the original frame
+        img = cv2.imread(frame_path)
+        mask = None
+        
+        # Process masks for this frame
+        if object == "All":
+            for i, object_id in enumerate(object_ids):
+                file_path = os.path.join(mask_folder, f"{object_id}.png")
+                if os.path.exists(file_path):
+                    current_mask = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
+                    if content != "Matting":
+                        _, current_mask = cv2.threshold(current_mask, 127, 255, cv2.THRESH_BINARY)
+                        current_mask = fill_small_holes(current_mask)
+                        current_mask = remove_small_dots(current_mask)
+                        current_mask = grow_shrink(current_mask)
+                        current_mask = border_fix(current_mask)
+                    elif content == "Matting":
+                        current_mask = gamma(current_mask)
+                        current_mask = grow_shrink_matte(current_mask)
+                    
+                    # Initialize or accumulate
+                    if mask is None:
+                        mask = current_mask
+                    else:
+                        mask = cv2.bitwise_or(mask, current_mask)
+            
+            if mask is not None:
+                mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        else:
+            mask_filename = os.path.join(mask_folder, f"{object}.png")
+            if os.path.exists(mask_filename):
+                mask = cv2.imread(mask_filename, cv2.IMREAD_GRAYSCALE)
+                if content != "Matting":
+                    _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+                    mask = fill_small_holes(mask)
+                    mask = remove_small_dots(mask)
+                    mask = grow_shrink(mask)
+                    mask = border_fix(mask)
+                elif content == "Matting":
+                    mask = gamma(mask)
+                    mask = grow_shrink_matte(mask)
+                mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        
+        # Apply edge smoothing if needed
+        if content == "Segmentation with Edge Smoothing" and mask is not None:
+            mask = run_smoothing_model(mask, smoothing_model, device)
+        
+        # Generate output based on type
+        if mask is not None:
+            if type == "Alpha":
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+                img[:, :, 3] = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+                mask = cv2.cvtColor(mask, cv2.COLOR_BGR2BGRA)
+                img = img * (mask/255)
+                img = img.astype(np.uint8)
+            elif type == "Greenscreen":
+                img = img * (mask/255)
+                green = np.zeros_like(img)
+                green[:, :] = [0, 255, 0]
+                img = img + (green * (cv2.bitwise_not(mask) / 255))
+                img = img.astype(np.uint8)
+            else:  # type == "Matte"
+                img = mask
+            
+            # Save the frame
+            output_filename = os.path.join(output_dir, f"frame_{frame_number:04d}.png")
+            cv2.imwrite(output_filename, img)
+            exported_files.append(output_filename)
+        
+        # Update progress
+        progress((frame_number + 1) / frame_count, desc=f"Exporting frame {frame_number + 1}/{frame_count}...")
+    
+    # Create a zip file for download
+    zip_filename = os.path.join(temp_dir, f"{base_filename}_png_sequence.zip")
+    with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for file in exported_files:
+            arcname = os.path.basename(file)
+            zipf.write(file, arcname)
+    
+    progress(1.0)
+    success_msg = f"Exported {len(exported_files)} PNG files to {output_dir}"
+    return (success_msg, gr.DownloadButton(label="💾 Download PNG Sequence (ZIP)", value=zip_filename, visible=True))
+
 def export_video(fps, type, content, object, progress=gr.Progress()):
     frame_count = count_frames()
     total_masks = 0
@@ -1446,6 +1573,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
         with gr.Row():
             export_btn = gr.Button(value="Export Video")
             export_img_btn = gr.Button(value="Export Image")
+            export_png_seq_btn = gr.Button(value="Export PNG Sequence")
         export_status = gr.Textbox(value="", label="Export Status")
         export_download = gr.DownloadButton(label="💾 Download Exported Video", visible=False)
     
@@ -1480,6 +1608,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     export_content.input(change_export_settings, inputs=[export_type, export_content, export_object]).then(build_video_filename, outputs=preview_filename)
     export_btn.click(export_video, inputs=[export_fps, export_type, export_content, export_object], outputs=[export_status, export_download])
     export_img_btn.click(export_image, inputs=[export_type, export_content, export_object], outputs=[export_status, export_download])
+    export_png_seq_btn.click(export_png_sequence, inputs=[export_type, export_content, export_object], outputs=[export_status, export_download])
     export_tab.select(update_export_objects, outputs=export_object)
     segmentation_tab.select(sync_sliders, inputs=[frame_slider_mat], outputs=[frame_slider])
     matting_tab.select(sync_sliders, inputs=[frame_slider], outputs=[frame_slider_mat]).then(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
