@@ -10,6 +10,7 @@ import torch
 import requests
 import threading
 import zipfile
+import re
 from packaging import version
 from collections import namedtuple
 from fractions import Fraction
@@ -428,12 +429,165 @@ def process_video(video_file, progress=gr.Progress()):
     progress(1)
     return frame_count
 
-# Function to call process_video and get the frame count, then set up the slider to use that number of frames, also update the fps in the export tab
-def process_and_enable_slider(video_file):
-    settings['export_object'] = "All"  # reset the export object to All when a new input file is uploaded
+def is_image_sequence(file_or_files):
+    """
+    Detect if input is an image sequence (multiple image files or a folder)
+    """
+    if isinstance(file_or_files, list):
+        # Multiple files uploaded
+        if len(file_or_files) > 1:
+            # Check if all files are images
+            image_extensions = ('.png', '.jpg', '.jpeg', '.PNG', '.JPG', '.JPEG')
+            return all(f.name.lower().endswith(image_extensions) for f in file_or_files)
+    elif hasattr(file_or_files, 'name'):
+        # Single file - check if it's an image (could be first of a sequence)
+        image_extensions = ('.png', '.jpg', '.jpeg', '.PNG', '.JPG', '.JPEG')
+        return file_or_files.name.lower().endswith(image_extensions)
+    return False
+
+def process_image_sequence(image_files, fps_override=None, progress=gr.Progress()):
+    """
+    Process a sequence of image files and save them as frames
+    """
+    global inference_state, session
+    inference_state = None  # empty out the inference state if populated
+    
+    # Sort files by name (handles both numeric and alphabetic sorting)
+    if isinstance(image_files, list):
+        # Multiple files uploaded
+        sorted_files = sorted(image_files, key=lambda x: x.name)
+        
+        # Extract base filename from the first file
+        first_filename = os.path.basename(sorted_files[0].name)
+        # Remove frame number and extension to get base name
+        base_name = re.sub(r'[_\-]?\d+\.\w+$', '', first_filename)
+        if not base_name:
+            base_name = "image_sequence"
+    else:
+        # Single image file
+        sorted_files = [image_files]
+        filename = os.path.basename(image_files.name)
+        base_name = os.path.splitext(filename)[0]
+    
+    session["input_file_name"] = base_name
+    save_session()
+    
+    # Create temp directories to save the frames
+    if os.path.exists(temp_dir):
+        shutil.rmtree(temp_dir)
+    os.makedirs(frames_dir)
+    os.makedirs(mask_dir)
+    os.makedirs(matting_dir)
+    
+    # Process and save each image
+    progress(0, desc="Loading Image Sequence...")
+    frame_count = len(sorted_files)
+    
+    # Set FPS (use override or default)
+    if fps_override:
+        settings['export_fps'] = float(fps_override)
+    else:
+        settings['export_fps'] = 24.0  # Default FPS for image sequences
     save_settings()
-    frame_count = process_video(video_file)
-    return [gr.Slider(minimum=0,maximum=frame_count-1, value=0, step=1, label="Frame Number"), gr.Slider(minimum=0,maximum=frame_count-1, value=0, step=1, label="Frame Number"), gr.Dropdown(choices=[23.976, 24, 29.97, 30], value=str(settings['export_fps']), label="FPS", allow_custom_value=True, interactive=True)]
+    
+    # Get dimensions from first image to check consistency
+    first_img = cv2.imread(sorted_files[0].name if hasattr(sorted_files[0], 'name') else sorted_files[0])
+    expected_height, expected_width = first_img.shape[:2]
+    
+    for idx, img_file in enumerate(sorted_files):
+        # Read image
+        if hasattr(img_file, 'name'):
+            img_path = img_file.name
+        else:
+            img_path = img_file
+            
+        frame = cv2.imread(img_path)
+        
+        if frame is None:
+            gr.Warning(f"Could not read image: {os.path.basename(img_path)}")
+            continue
+        
+        # Check dimensions consistency
+        if frame.shape[:2] != (expected_height, expected_width):
+            gr.Warning(f"Image {os.path.basename(img_path)} has different dimensions. Resizing to match first frame.")
+            frame = cv2.resize(frame, (expected_width, expected_height))
+        
+        # Save frame with standardized naming
+        frame_filename = os.path.join(frames_dir, f"{idx:04d}.png")
+        cv2.imwrite(frame_filename, frame)
+        
+        progress((idx + 1) / frame_count)
+    
+    # Initialize the predictor
+    inference_state = predictor.init_state(video_path=frames_dir, async_loading_frames=True, offload_video_to_cpu=True)
+    progress(1)
+    
+    gr.Info(f"Loaded {frame_count} images as sequence")
+    return frame_count
+
+def detect_image_sequence_folder(folder_path):
+    """
+    Detect if a folder contains an image sequence
+    Returns sorted list of image paths if valid, None otherwise
+    """
+    if not os.path.isdir(folder_path):
+        return None
+    
+    image_extensions = ('.png', '.jpg', '.jpeg', '.PNG', '.JPG', '.JPEG')
+    image_files = []
+    
+    for file in os.listdir(folder_path):
+        if file.lower().endswith(image_extensions):
+            image_files.append(os.path.join(folder_path, file))
+    
+    if len(image_files) > 0:
+        # Sort files naturally (handles numeric sequences)
+        def natural_sort_key(s):
+            return [int(text) if text.isdigit() else text.lower() 
+                    for text in re.split('([0-9]+)', s)]
+        
+        return sorted(image_files, key=natural_sort_key)
+    
+    return None
+
+# Function to call process_video and get the frame count, then set up the slider to use that number of frames, also update the fps in the export tab
+def process_and_enable_slider(input_files, fps_override=None):
+    """
+    Process video file or image sequence and enable slider
+    """
+    settings['export_object'] = "All"  # reset export object when new input is uploaded
+    save_settings()
+    
+    # Check if input is image sequence or video
+    if input_files is None:
+        gr.Warning("No input files provided")
+        return [gr.Slider(minimum=0, maximum=0, value=0, step=1, label="Frame Number"), 
+                gr.Slider(minimum=0, maximum=0, value=0, step=1, label="Frame Number"),
+                gr.Dropdown(choices=[24], value="24", label="FPS", allow_custom_value=True, interactive=True)]
+    
+    # Handle multiple files (image sequence)
+    if isinstance(input_files, list):
+        gr.Info(f"Processing {len(input_files)} images as sequence...")
+        frame_count = process_image_sequence(input_files, fps_override)
+    else:
+        # Single file - could be video or single image
+        if hasattr(input_files, 'name'):
+            file_ext = os.path.splitext(input_files.name)[1].lower()
+            if file_ext in ['.png', '.jpg', '.jpeg']:
+                # Single image - treat as 1-frame sequence
+                gr.Info("Processing single image...")
+                frame_count = process_image_sequence(input_files, fps_override)
+            else:
+                # Video file
+                frame_count = process_video(input_files)
+        else:
+            # Fallback to video processing
+            frame_count = process_video(input_files)
+    
+    return [gr.Slider(minimum=0, maximum=frame_count-1, value=0, step=1, label="Frame Number"), 
+            gr.Slider(minimum=0, maximum=frame_count-1, value=0, step=1, label="Frame Number"), 
+            gr.Dropdown(choices=[23.976, 24, 29.97, 30], value=str(settings['export_fps']), 
+                       label="FPS", allow_custom_value=True, interactive=True)]
 
 # Function to modify the value of the frame slider when clicking on the dataframe, also update the displayed object color
 def change_slider(event_data: gr.SelectData):
@@ -719,20 +873,20 @@ def draw_points(image, frame_number):
     return image
 
 def lock_ui():
-    return [gr.Button(value="Track Objects", visible=False), gr.Button(value="Cancel", visible=True), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.Button(value="Dedupe Masks", interactive=False), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
+    return [gr.Button(value="Track Objects", visible=False), gr.Button(value="Cancel", visible=True), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.Button(value="Dedupe Masks", interactive=False), gr.File(label="Upload Video or Single Image", file_types=['video', '.mkv', 'image'], interactive=False), gr.File(label="Upload Image Sequence (Select Multiple)", interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
 
 def lock_ui_dedupe():
-    return [gr.Button(value="Track Objects", interactive=False), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.Button(value="Dedupe Masks", interactive=False), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
+    return [gr.Button(value="Track Objects", interactive=False), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.Button(value="Dedupe Masks", interactive=False), gr.File(label="Upload Video or Single Image", file_types=['video', '.mkv', 'image'], interactive=False), gr.File(label="Upload Image Sequence (Select Multiple)", interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
 
 def unlock_ui():
-    return [gr.Button(value="Track Objects", visible=True, interactive=True), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=True), gr.Button(value="Clear Object (frame)", interactive=True), gr.Button(value="Clear Object", interactive=True), gr.Button(value="Clear Tracking Data", interactive=True), gr.Button(value="Clear All", interactive=True), gr.Button(value="Dedupe Masks", interactive=True), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=True), gr.Tab(label="Matting", visible=True), gr.Tab(label="Export", visible=True)]
+    return [gr.Button(value="Track Objects", visible=True, interactive=True), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=True), gr.Button(value="Clear Object (frame)", interactive=True), gr.Button(value="Clear Object", interactive=True), gr.Button(value="Clear Tracking Data", interactive=True), gr.Button(value="Clear All", interactive=True), gr.Button(value="Dedupe Masks", interactive=True), gr.File(label="Upload Video or Single Image", file_types=['video', '.mkv', 'image'], interactive=True), gr.File(label="Upload Image Sequence (Select Multiple)", interactive=True), gr.Tab(label="Matting", visible=True), gr.Tab(label="Export", visible=True)]
 
 
 def lock_ui_matting():
-    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=False), gr.Button(value="Cancel Matting", visible=True), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=False), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=False), gr.Tab(label="Segmentation", visible=False), gr.Tab(label="Export", visible=False)]
+    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=False), gr.Button(value="Cancel Matting", visible=True), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=False), gr.File(label="Upload Video or Single Image", file_types=['video', '.mkv', 'image'], interactive=False), gr.File(label="Upload Image Sequence (Select Multiple)", interactive=False), gr.Tab(label="Segmentation", visible=False), gr.Tab(label="Export", visible=False)]
 
 def unlock_ui_matting():
-    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=True), gr.Button(value="Cancel Matting", visible=False), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=True), gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'], interactive=True), gr.Tab(label="Segmentation", visible=True), gr.Tab(label="Export", visible=True)]
+    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=True), gr.Button(value="Cancel Matting", visible=False), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=True), gr.File(label="Upload Video or Single Image", file_types=['video', '.mkv', 'image'], interactive=True), gr.File(label="Upload Image Sequence (Select Multiple)", interactive=True), gr.Tab(label="Segmentation", visible=True), gr.Tab(label="Export", visible=True)]
 
 def propagate_masks():
     global propagating
@@ -1443,8 +1597,31 @@ with gr.Blocks(title='Sammie-Roto') as demo:
 
     # Define the Gradio components
     with gr.Sidebar():
-        gr.Markdown("### Input Video / Settings")
-        video_input = gr.File(label="Upload Video or Image File", file_types=['video', '.mkv', 'image'])
+        gr.Markdown("### Input Video/Images / Settings")
+        
+        with gr.Tabs():
+            with gr.Tab("Video/Single Image"):
+                video_input = gr.File(
+                    label="Upload Video or Single Image", 
+                    file_types=['video', '.mkv', 'image', '.mp4', '.avi', '.mov', '.png', '.jpg', '.jpeg'],
+                    interactive=True
+                )
+            with gr.Tab("Image Sequence"):
+                image_sequence_input = gr.File(
+                    label="Upload Image Sequence (Select Multiple)", 
+                    file_types=['image', '.png', '.jpg', '.jpeg'],
+                    file_count="multiple",
+                    interactive=True
+                )
+                fps_input = gr.Number(
+                    label="FPS for Image Sequence",
+                    value=24.0,
+                    minimum=1.0,
+                    maximum=120.0,
+                    step=0.001,
+                    interactive=True
+                )
+                gr.Markdown("💡 **Tip**: Select multiple images at once using Ctrl/Cmd+Click")
         model_dropdown = gr.Dropdown(choices=["Auto", "SAM2.1Large (High Quality)", "SAM2.1Base+", "EfficientTAM (Fast)"], value=set_model_dropdown(), label="Segmentation Model", interactive=True)
         matting_quality_dropdown = gr.Dropdown(choices=["480p", "720p", "1080p", "Full"], value=set_matting_quality_dropdown(), label="Matting Max Internal Size", interactive=True)
         cpu_checkbox = gr.Checkbox(label="Force Processing on CPU", value=settings["force_cpu"], interactive=True)
@@ -1578,7 +1755,42 @@ with gr.Blocks(title='Sammie-Roto') as demo:
         export_download = gr.DownloadButton(label="💾 Download Exported Video", visible=False)
     
     # Define the event listeners
-    video_input.upload(process_and_enable_slider, inputs=video_input, outputs=[frame_slider, frame_slider_mat, export_fps]).then(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer).then(reset_postprocessing, outputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]).then(lambda: "All", outputs=export_object).then(lambda: build_video_filename(), outputs=preview_filename)
+    video_input.upload(
+        lambda x: process_and_enable_slider(x, None),
+        inputs=video_input,
+        outputs=[frame_slider, frame_slider_mat, export_fps]
+    ).then(
+        clear_all_points, outputs=point_viewer
+    ).then(
+        update_image, inputs=frame_slider, outputs=image_viewer
+    ).then(
+        reset_postprocessing, 
+        outputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, 
+                 show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]
+    ).then(
+        lambda: "All", outputs=export_object
+    ).then(
+        lambda: build_video_filename(), outputs=preview_filename
+    )
+
+    # Add new event for image sequence input:
+    image_sequence_input.upload(
+        lambda x, fps: process_and_enable_slider(x, fps),
+        inputs=[image_sequence_input, fps_input],
+        outputs=[frame_slider, frame_slider_mat, export_fps]
+    ).then(
+        clear_all_points, outputs=point_viewer
+    ).then(
+        update_image, inputs=frame_slider, outputs=image_viewer
+    ).then(
+        reset_postprocessing,
+        outputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider,
+                 show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]
+    ).then(
+        lambda: "All", outputs=export_object
+    ).then(
+        lambda: build_video_filename(), outputs=preview_filename
+    )
     model_dropdown.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
     matting_quality_dropdown.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
     cpu_checkbox.input(change_settings, inputs=[model_dropdown, matting_quality_dropdown, cpu_checkbox])
@@ -1599,8 +1811,8 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     clear_all_points_btn.click(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
     clear_points_obj_btn.click(clear_points_obj, inputs=[frame_slider, object_id], outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
     clear_all_points_obj_btn.click(clear_all_points_obj, inputs=object_id, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
-    dedupe_masks_btn.click(lock_ui_dedupe, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, matting_tab, export_tab]).then(lambda: replace_similar_matte_frames(dedupe_min_threshold)).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, matting_tab, export_tab]).then(update_image, inputs=frame_slider, outputs=image_viewer)
-    propagate_btn.click(lock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, matting_tab, export_tab]).then(propagate_masks, outputs=[frame_slider, image_viewer]).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, matting_tab, export_tab])
+    dedupe_masks_btn.click(lock_ui_dedupe, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, image_sequence_input, matting_tab, export_tab]).then(lambda: replace_similar_matte_frames(dedupe_min_threshold)).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, image_sequence_input, matting_tab, export_tab]).then(update_image, inputs=frame_slider, outputs=image_viewer)
+    propagate_btn.click(lock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, image_sequence_input, matting_tab, export_tab]).then(propagate_masks, outputs=[frame_slider, image_viewer]).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, image_sequence_input, matting_tab, export_tab])
     cancel_propagate_btn.click(cancel_propagation)
     point_viewer.select(change_slider, outputs=[frame_slider, object_id, color_picker], show_progress='hidden')
     export_type.input(change_export_settings, inputs=[export_type, export_content, export_object]).then(build_video_filename, outputs=preview_filename)
@@ -1614,7 +1826,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     matting_tab.select(sync_sliders, inputs=[frame_slider], outputs=[frame_slider_mat]).then(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
     frame_slider_mat.change(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
     viewer_output_radio.change(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
-    matting_btn.click(lock_ui_matting, outputs=[matting_btn, cancel_matting_btn, viewer_output_radio, video_input, segmentation_tab, export_tab]).then(run_matting, inputs=frame_slider_mat, outputs=frame_slider_mat).then(unlock_ui_matting, outputs=[matting_btn, cancel_matting_btn, viewer_output_radio, video_input, segmentation_tab, export_tab])
+    matting_btn.click(lock_ui_matting, outputs=[matting_btn, cancel_matting_btn, viewer_output_radio, video_input, image_sequence_input, segmentation_tab, export_tab]).then(run_matting, inputs=frame_slider_mat, outputs=frame_slider_mat).then(unlock_ui_matting, outputs=[matting_btn, cancel_matting_btn, viewer_output_radio, video_input, image_sequence_input, segmentation_tab, export_tab])
     cancel_matting_btn.click(cancel_matting)
 
     name_roto_checkbox.change(update_name_roto, inputs=name_roto_checkbox, outputs=preview_filename)
