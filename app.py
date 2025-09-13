@@ -452,10 +452,21 @@ def process_image_sequence(image_files, fps_override=None, progress=gr.Progress(
     global inference_state, session
     inference_state = None  # empty out the inference state if populated
     
-    # Sort files by name (handles both numeric and alphabetic sorting)
+    # Natural sorting function for proper numerical ordering
+    def natural_sort_key(s):
+        """Extract numbers from filename for proper sorting"""
+        import re
+        # Get just the filename if it's a file object
+        filename = s.name if hasattr(s, 'name') else s
+        filename = os.path.basename(filename)
+        # Split by numbers and convert them to integers for sorting
+        return [int(text) if text.isdigit() else text.lower() 
+                for text in re.split('([0-9]+)', filename)]
+    
+    # Sort files by name using natural sorting (handles both numeric and alphabetic sorting)
     if isinstance(image_files, list):
-        # Multiple files uploaded
-        sorted_files = sorted(image_files, key=lambda x: x.name)
+        # Multiple files uploaded - use natural sorting instead of alphabetical
+        sorted_files = sorted(image_files, key=natural_sort_key)
         
         # Extract base filename from the first file
         first_filename = os.path.basename(sorted_files[0].name)
@@ -544,7 +555,7 @@ def detect_image_sequence_folder(folder_path):
         # Sort files naturally (handles numeric sequences)
         def natural_sort_key(s):
             return [int(text) if text.isdigit() else text.lower() 
-                    for text in re.split('([0-9]+)', s)]
+                    for text in re.split('([0-9]+)', os.path.basename(s))]
         
         return sorted(image_files, key=natural_sort_key)
     
