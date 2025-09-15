@@ -848,6 +848,276 @@ def manual_multi_image_and_enable_slider(image_files):
             gr.Dropdown(choices=[23.976, 24, 29.97, 30], value=str(settings['export_fps']),
                        label="FPS", allow_custom_value=True, interactive=True)]
 
+# Sammie-Roto Universal Input System
+# Version: 3.0.0
+# Date: 2025-01-13
+# AI Model: Claude Opus 4.1
+
+def process_universal_input(input_files, progress=gr.Progress()):
+    """
+    Universal input handler that intelligently processes:
+    - Single video file → process as video
+    - Single image → check for sequence, otherwise process as single frame
+    - Multiple images → process as sequence
+    - Mixed files → filter and process appropriately
+    """
+    settings['export_object'] = "All"  # reset export object when new input is uploaded
+    save_settings()
+
+    if input_files is None:
+        gr.Warning("No input files provided")
+        return [gr.Slider(minimum=0, maximum=0, value=0, step=1, label="Frame Number"),
+                gr.Slider(minimum=0, maximum=0, value=0, step=1, label="Frame Number"),
+                gr.Dropdown(choices=[24], value="24", label="FPS", allow_custom_value=True, interactive=True)]
+
+    # Handle both single and multiple file inputs
+    if not isinstance(input_files, list):
+        input_files = [input_files]
+
+    # Categorize files by type
+    video_files = []
+    image_files = []
+
+    video_extensions = ('.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv')
+    image_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif')
+
+    for file in input_files:
+        file_path = file.name if hasattr(file, 'name') else file
+        file_ext = os.path.splitext(file_path)[1].lower()
+
+        if file_ext in video_extensions:
+            video_files.append(file)
+        elif file_ext in image_extensions:
+            image_files.append(file)
+
+    # Decision logic
+    if video_files and not image_files:
+        # Only video files - process the first one
+        gr.Info(f"Processing video: {os.path.basename(video_files[0].name)}")
+        frame_count = process_video(video_files[0], progress)
+
+    elif image_files and not video_files:
+        # Only image files
+        if len(image_files) == 1:
+            # Single image - try to detect sequence
+            sequence_files = auto_detect_sequence(image_files[0])
+            if sequence_files and len(sequence_files) > 1:
+                gr.Info(f"Auto-detected sequence with {len(sequence_files)} frames")
+                frame_count = process_detected_sequence(sequence_files, progress)
+            else:
+                gr.Info("Processing single image")
+                frame_count = process_single_image_universal(image_files[0], progress)
+        else:
+            # Multiple images - process as sequence
+            gr.Info(f"Processing {len(image_files)} images as sequence")
+            frame_count = process_image_sequence_universal(image_files, progress)
+
+    elif video_files and image_files:
+        # Mixed input - prioritize video
+        gr.Warning("Mixed file types detected. Processing video only.")
+        frame_count = process_video(video_files[0], progress)
+
+    else:
+        gr.Warning("No valid media files found")
+        frame_count = 0
+
+    return [gr.Slider(minimum=0, maximum=frame_count-1, value=0, step=1, label="Frame Number"),
+            gr.Slider(minimum=0, maximum=frame_count-1, value=0, step=1, label="Frame Number"),
+            gr.Dropdown(choices=[23.976, 24, 29.97, 30], value=str(settings['export_fps']),
+                       label="FPS", allow_custom_value=True, interactive=True)]
+
+def auto_detect_sequence(single_image_file):
+    """
+    Given a single image file, detect if it's part of a sequence
+    Returns list of file paths if sequence found, None otherwise
+    """
+    file_path = single_image_file.name if hasattr(single_image_file, 'name') else single_image_file
+    directory = os.path.dirname(file_path)
+    filename = os.path.basename(file_path)
+
+    # Common sequence patterns
+    patterns = [
+        r'^(.+?)(\d{2,})(\.\w+)$',           # name001.ext or name0001.ext
+        r'^(.+?)[_\-\.](\d{2,})(\.\w+)$',    # name_001.ext, name-001.ext, name.001.ext
+    ]
+
+    for pattern in patterns:
+        match = re.match(pattern, filename)
+        if match:
+            # Extract the base pattern
+            if len(match.groups()) == 3:
+                prefix = match.group(1)
+                number = match.group(2)
+                extension = match.group(3)
+                digit_count = len(number)
+
+                # Look for other files with same pattern
+                sequence_files = []
+                for file in os.listdir(directory):
+                    if re.match(pattern, file):
+                        file_match = re.match(pattern, file)
+                        if (file_match.group(1) == prefix and
+                            file_match.group(3) == extension and
+                            len(file_match.group(2)) == digit_count):
+                            sequence_files.append(os.path.join(directory, file))
+
+                if len(sequence_files) > 1:
+                    # Natural sort
+                    def natural_sort_key(s):
+                        return [int(text) if text.isdigit() else text.lower()
+                                for text in re.split('([0-9]+)', os.path.basename(s))]
+                    return sorted(sequence_files, key=natural_sort_key)
+
+    return None
+
+def process_single_image_universal(image_file, progress=gr.Progress()):
+    """
+    Process a single standalone image as 1-frame video
+    """
+    global inference_state, session
+    inference_state = None
+
+    # Set session name
+    filename = os.path.basename(image_file.name if hasattr(image_file, 'name') else image_file)
+    base_name = os.path.splitext(filename)[0]
+    session["input_file_name"] = base_name
+    save_session()
+
+    # Create directories
+    if os.path.exists(temp_dir):
+        shutil.rmtree(temp_dir)
+    os.makedirs(frames_dir)
+    os.makedirs(mask_dir)
+    os.makedirs(matting_dir)
+
+    # Load and save single image
+    progress(0, desc="Loading image...")
+    img_path = image_file.name if hasattr(image_file, 'name') else image_file
+    frame = cv2.imread(img_path)
+
+    if frame is None:
+        gr.Warning(f"Could not read image")
+        return 0
+
+    cv2.imwrite(os.path.join(frames_dir, "0000.png"), frame)
+
+    settings['export_fps'] = 24.0
+    save_settings()
+
+    inference_state = predictor.init_state(video_path=frames_dir, async_loading_frames=True, offload_video_to_cpu=True)
+    progress(1)
+
+    return 1
+
+def process_image_sequence_universal(image_files, progress=gr.Progress()):
+    """
+    Process multiple image files as a sequence
+    """
+    global inference_state, session
+    inference_state = None
+
+    # Natural sort function
+    def natural_sort_key(s):
+        filename = s.name if hasattr(s, 'name') else s
+        filename = os.path.basename(filename)
+        return [int(text) if text.isdigit() else text.lower()
+                for text in re.split('([0-9]+)', filename)]
+
+    sorted_files = sorted(image_files, key=natural_sort_key)
+
+    # Extract base name
+    first_filename = os.path.basename(sorted_files[0].name if hasattr(sorted_files[0], 'name') else sorted_files[0])
+    base_name = re.sub(r'[_\-\.]?\d+\.\w+$', '', first_filename) or "image_sequence"
+    session["input_file_name"] = base_name
+    save_session()
+
+    # Create directories
+    if os.path.exists(temp_dir):
+        shutil.rmtree(temp_dir)
+    os.makedirs(frames_dir)
+    os.makedirs(mask_dir)
+    os.makedirs(matting_dir)
+
+    # Process images
+    progress(0, desc="Loading image sequence...")
+    frame_count = len(sorted_files)
+
+    settings['export_fps'] = 24.0
+    save_settings()
+
+    # Get expected dimensions
+    first_path = sorted_files[0].name if hasattr(sorted_files[0], 'name') else sorted_files[0]
+    first_img = cv2.imread(first_path)
+    expected_h, expected_w = first_img.shape[:2]
+
+    for idx, img_file in enumerate(sorted_files):
+        img_path = img_file.name if hasattr(img_file, 'name') else img_file
+        frame = cv2.imread(img_path)
+
+        if frame is None:
+            gr.Warning(f"Skipping unreadable image: {os.path.basename(img_path)}")
+            continue
+
+        # Resize if needed
+        if frame.shape[:2] != (expected_h, expected_w):
+            frame = cv2.resize(frame, (expected_w, expected_h))
+
+        cv2.imwrite(os.path.join(frames_dir, f"{idx:04d}.png"), frame)
+        progress((idx + 1) / frame_count)
+
+    inference_state = predictor.init_state(video_path=frames_dir, async_loading_frames=True, offload_video_to_cpu=True)
+    progress(1)
+
+    return frame_count
+
+def process_detected_sequence(file_paths, progress=gr.Progress()):
+    """
+    Process auto-detected sequence from file paths
+    """
+    global inference_state, session
+    inference_state = None
+
+    # Extract base name
+    first_filename = os.path.basename(file_paths[0])
+    base_name = re.sub(r'[_\-\.]?\d+\.\w+$', '', first_filename) or "image_sequence"
+    session["input_file_name"] = base_name
+    save_session()
+
+    # Create directories
+    if os.path.exists(temp_dir):
+        shutil.rmtree(temp_dir)
+    os.makedirs(frames_dir)
+    os.makedirs(mask_dir)
+    os.makedirs(matting_dir)
+
+    # Process images
+    progress(0, desc="Loading detected sequence...")
+    frame_count = len(file_paths)
+
+    settings['export_fps'] = 24.0
+    save_settings()
+
+    # Get expected dimensions
+    first_img = cv2.imread(file_paths[0])
+    expected_h, expected_w = first_img.shape[:2]
+
+    for idx, img_path in enumerate(file_paths):
+        frame = cv2.imread(img_path)
+
+        if frame is None:
+            continue
+
+        if frame.shape[:2] != (expected_h, expected_w):
+            frame = cv2.resize(frame, (expected_w, expected_h))
+
+        cv2.imwrite(os.path.join(frames_dir, f"{idx:04d}.png"), frame)
+        progress((idx + 1) / frame_count)
+
+    inference_state = predictor.init_state(video_path=frames_dir, async_loading_frames=True, offload_video_to_cpu=True)
+    progress(1)
+
+    return frame_count
+
 # Function to modify the value of the frame slider when clicking on the dataframe, also update the displayed object color
 def change_slider(event_data: gr.SelectData):
     color = '#%02x%02x%02x' % PALETTE[event_data.row_value[1] % len(PALETTE)] # convert color palette to hex
@@ -1132,20 +1402,20 @@ def draw_points(image, frame_number):
     return image
 
 def lock_ui():
-    return [gr.Button(value="Track Objects", visible=False), gr.Button(value="Cancel", visible=True), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.Button(value="Dedupe Masks", interactive=False), gr.File(label="Upload Video or Image (auto-detects sequences)", interactive=False), gr.File(label="Select Multiple Images (Ctrl/Cmd+Click)", interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
+    return [gr.Button(value="Track Objects", visible=False), gr.Button(value="Cancel", visible=True), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.Button(value="Dedupe Masks", interactive=False), gr.File(label="Drop Video, Image, or Image Sequence", interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
 
 def lock_ui_dedupe():
-    return [gr.Button(value="Track Objects", interactive=False), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.Button(value="Dedupe Masks", interactive=False), gr.File(label="Upload Video or Image (auto-detects sequences)", interactive=False), gr.File(label="Select Multiple Images (Ctrl/Cmd+Click)", interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
+    return [gr.Button(value="Track Objects", interactive=False), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=False), gr.Button(value="Clear Object (frame)", interactive=False), gr.Button(value="Clear Object", interactive=False), gr.Button(value="Clear Tracking Data", interactive=False), gr.Button(value="Clear All", interactive=False), gr.Button(value="Dedupe Masks", interactive=False), gr.File(label="Drop Video, Image, or Image Sequence", interactive=False), gr.Tab(label="Matting", visible=False), gr.Tab(label="Export", visible=False)]
 
 def unlock_ui():
-    return [gr.Button(value="Track Objects", visible=True, interactive=True), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=True), gr.Button(value="Clear Object (frame)", interactive=True), gr.Button(value="Clear Object", interactive=True), gr.Button(value="Clear Tracking Data", interactive=True), gr.Button(value="Clear All", interactive=True), gr.Button(value="Dedupe Masks", interactive=True), gr.File(label="Upload Video or Image (auto-detects sequences)", interactive=True), gr.File(label="Select Multiple Images (Ctrl/Cmd+Click)", interactive=True), gr.Tab(label="Matting", visible=True), gr.Tab(label="Export", visible=True)]
+    return [gr.Button(value="Track Objects", visible=True, interactive=True), gr.Button(value="Cancel", visible=False), gr.Button(value="Undo Last Point", interactive=True), gr.Button(value="Clear Object (frame)", interactive=True), gr.Button(value="Clear Object", interactive=True), gr.Button(value="Clear Tracking Data", interactive=True), gr.Button(value="Clear All", interactive=True), gr.Button(value="Dedupe Masks", interactive=True), gr.File(label="Drop Video, Image, or Image Sequence", interactive=True), gr.Tab(label="Matting", visible=True), gr.Tab(label="Export", visible=True)]
 
 
 def lock_ui_matting():
-    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=False), gr.Button(value="Cancel Matting", visible=True), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=False), gr.File(label="Upload Video or Image (auto-detects sequences)", interactive=False), gr.File(label="Select Multiple Images (Ctrl/Cmd+Click)", interactive=False), gr.Tab(label="Segmentation", visible=False), gr.Tab(label="Export", visible=False)]
+    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=False), gr.Button(value="Cancel Matting", visible=True), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=False), gr.File(label="Drop Video, Image, or Image Sequence", interactive=False), gr.Tab(label="Segmentation", visible=False), gr.Tab(label="Export", visible=False)]
 
 def unlock_ui_matting():
-    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=True), gr.Button(value="Cancel Matting", visible=False), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=True), gr.File(label="Upload Video or Image (auto-detects sequences)", interactive=True), gr.File(label="Select Multiple Images (Ctrl/Cmd+Click)", interactive=True), gr.Tab(label="Segmentation", visible=True), gr.Tab(label="Export", visible=True)]
+    return [gr.Button(value="Run Matting (based on segmentation mask of selected frame)", visible=True), gr.Button(value="Cancel Matting", visible=False), gr.Radio(["Segmentation Mask", "Matting Result"], label="Viewer Output", value="Matting Result", interactive=True), gr.File(label="Drop Video, Image, or Image Sequence", interactive=True), gr.Tab(label="Segmentation", visible=True), gr.Tab(label="Export", visible=True)]
 
 def propagate_masks():
     global propagating
@@ -1856,24 +2126,23 @@ with gr.Blocks(title='Sammie-Roto') as demo:
 
     # Define the Gradio components
     with gr.Sidebar():
-        gr.Markdown("### Input Video/Images & Settings")
+        gr.Markdown("### Input Media & Settings")
 
-        # Main input - auto-detects video, single image, or image sequence
-        video_input = gr.File(
-            label="Upload Video or Image (auto-detects sequences)",
-            file_types=['video', '.mkv', '.mp4', '.avi', '.mov', 'image', '.png', '.jpg', '.jpeg'],
+        # ONE universal input that handles everything
+        media_input = gr.File(
+            label="Drop Video, Image, or Image Sequence",
+            file_types=['video', 'image', '.mp4', '.avi', '.mov', '.mkv', '.png', '.jpg', '.jpeg'],
+            file_count="multiple",  # Allow multiple files
             interactive=True
         )
 
-        # Optional: Manual multi-image selection in a collapsible section
-        with gr.Accordion("Manual Image Sequence Selection (Optional)", open=False):
-            gr.Markdown("💡 **Note**: Single image upload above auto-detects sequences. Use this only for manual selection.")
-            image_sequence_input = gr.File(
-                label="Select Multiple Images (Ctrl/Cmd+Click)",
-                file_types=['image', '.png', '.jpg', '.jpeg'],
-                file_count="multiple",
-                interactive=True
-            )
+        gr.Markdown("""
+        💡 **Smart Input Detection:**
+        - **Video** → Processes as video
+        - **Single Image** → Auto-detects if part of sequence
+        - **Multiple Images** → Processes as sequence
+        - **Drag & Drop** or **Click to Browse**
+        """)
 
         model_dropdown = gr.Dropdown(
             choices=["Auto", "SAM2.1Large (High Quality)", "SAM2.1Base+", "EfficientTAM (Fast)"],
@@ -2030,29 +2299,10 @@ with gr.Blocks(title='Sammie-Roto') as demo:
         export_download = gr.DownloadButton(label="💾 Download Exported Video", visible=False)
     
     # Define the event listeners
-    # Main video/image input with auto-detection
-    video_input.upload(
-        lambda x: auto_detect_and_enable_slider(x),
-        inputs=video_input,
-        outputs=[frame_slider, frame_slider_mat, export_fps]
-    ).then(
-        clear_all_points, outputs=point_viewer
-    ).then(
-        update_image, inputs=frame_slider, outputs=image_viewer
-    ).then(
-        reset_postprocessing,
-        outputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider,
-                 show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]
-    ).then(
-        lambda: "All", outputs=export_object
-    ).then(
-        lambda: build_video_filename(), outputs=preview_filename
-    )
-
-    # Optional manual multi-image selection
-    image_sequence_input.upload(
-        lambda x: manual_multi_image_and_enable_slider(x),
-        inputs=image_sequence_input,
+    # Single universal input handler
+    media_input.upload(
+        process_universal_input,
+        inputs=media_input,
         outputs=[frame_slider, frame_slider_mat, export_fps]
     ).then(
         clear_all_points, outputs=point_viewer
@@ -2087,8 +2337,8 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     clear_all_points_btn.click(clear_all_points, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
     clear_points_obj_btn.click(clear_points_obj, inputs=[frame_slider, object_id], outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
     clear_all_points_obj_btn.click(clear_all_points_obj, inputs=object_id, outputs=point_viewer).then(update_image, inputs=frame_slider, outputs=image_viewer)
-    dedupe_masks_btn.click(lock_ui_dedupe, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, image_sequence_input, matting_tab, export_tab]).then(lambda: replace_similar_matte_frames(dedupe_min_threshold)).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, image_sequence_input, matting_tab, export_tab]).then(update_image, inputs=frame_slider, outputs=image_viewer)
-    propagate_btn.click(lock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, image_sequence_input, matting_tab, export_tab]).then(propagate_masks, outputs=[frame_slider, image_viewer]).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, video_input, image_sequence_input, matting_tab, export_tab])
+    dedupe_masks_btn.click(lock_ui_dedupe, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, media_input, matting_tab, export_tab]).then(lambda: replace_similar_matte_frames(dedupe_min_threshold)).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, media_input, matting_tab, export_tab]).then(update_image, inputs=frame_slider, outputs=image_viewer)
+    propagate_btn.click(lock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, media_input, matting_tab, export_tab]).then(propagate_masks, outputs=[frame_slider, image_viewer]).then(unlock_ui, outputs=[propagate_btn, cancel_propagate_btn, undo_point_btn, clear_points_obj_btn, clear_all_points_obj_btn, clear_tracking_btn, clear_all_points_btn, dedupe_masks_btn, media_input, matting_tab, export_tab])
     cancel_propagate_btn.click(cancel_propagation)
     point_viewer.select(change_slider, outputs=[frame_slider, object_id, color_picker], show_progress='hidden')
     export_type.input(change_export_settings, inputs=[export_type, export_content, export_object]).then(build_video_filename, outputs=preview_filename)
@@ -2102,7 +2352,7 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     matting_tab.select(sync_sliders, inputs=[frame_slider], outputs=[frame_slider_mat]).then(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
     frame_slider_mat.change(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
     viewer_output_radio.change(update_image_mat, inputs=[frame_slider_mat, viewer_output_radio], outputs=image_viewer_mat, show_progress='hidden')
-    matting_btn.click(lock_ui_matting, outputs=[matting_btn, cancel_matting_btn, viewer_output_radio, video_input, image_sequence_input, segmentation_tab, export_tab]).then(run_matting, inputs=frame_slider_mat, outputs=frame_slider_mat).then(unlock_ui_matting, outputs=[matting_btn, cancel_matting_btn, viewer_output_radio, video_input, image_sequence_input, segmentation_tab, export_tab])
+    matting_btn.click(lock_ui_matting, outputs=[matting_btn, cancel_matting_btn, viewer_output_radio, media_input, segmentation_tab, export_tab]).then(run_matting, inputs=frame_slider_mat, outputs=frame_slider_mat).then(unlock_ui_matting, outputs=[matting_btn, cancel_matting_btn, viewer_output_radio, media_input, segmentation_tab, export_tab])
     cancel_matting_btn.click(cancel_matting)
 
     name_roto_checkbox.change(update_name_roto, inputs=name_roto_checkbox, outputs=preview_filename)
