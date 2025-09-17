@@ -1210,7 +1210,10 @@ def export_png_sequence(type, content, object, progress=gr.Progress()):
             if mask is not None:
                 mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
         else:
-            mask_filename = os.path.join(mask_folder, f"{object}.png")
+            if content == "Matting":
+                mask_filename = os.path.join(matting_dir, f"{frame_number:04d}", f"{object}.png")
+            else:
+                mask_filename = os.path.join(mask_dir, f"{frame_number:04d}", f"{object}.png")
             if os.path.exists(mask_filename):
                 mask = cv2.imread(mask_filename, cv2.IMREAD_GRAYSCALE)
                 if content != "Matting":
@@ -1270,24 +1273,34 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
     object_ids = get_objects()
     object_count = len(object_ids)
 
+    # Check if object_ids is empty
+    if not object_ids:
+        gr.Warning("No objects found. Please add points first.")
+        return ("No objects found. Please add points first.", gr.DownloadButton(visible=False))
+
+    # If a specific object is selected, check if it exists
+    if object != "All" and int(object) not in object_ids:
+        gr.Warning(f"Object {object} not found. Please select a valid object.")
+        return (f"Object {object} not found. Please select a valid object.", gr.DownloadButton(visible=False))
+
     if content == "Matting":
         if not os.path.exists(matting_dir):
             gr.Warning("No mattes to export. Please \"Run Matting\" from the Matting tab first.")
-            return ("No mattes to export. Please \"Run Matting\" from the Matting tab first.", None)
+            return ("No mattes to export. Please \"Run Matting\" from the Matting tab first.", gr.DownloadButton(visible=False))
         total_masks = sum([len(files) for _, _, files in os.walk(matting_dir)])
         if frame_count*object_count != total_masks:
             gr.Warning("Not all frames have mattes. Please \"Run Matting\" from the Matting tab.")
-            return ("Not all frames have mattes. Please \"Run Matting\" from the Matting tab.", None)
+            return ("Not all frames have mattes. Please \"Run Matting\" from the Matting tab.", gr.DownloadButton(visible=False))
     else:
         if not os.path.exists(mask_dir):
             gr.Warning("No masks to export. Please run \"Track Objects\" first.")
-            return ("No masks to export. Please run \"Track Objects\" first.", None)
+            return ("No masks to export. Please run \"Track Objects\" first.", gr.DownloadButton(visible=False))
             
         total_masks = sum([len(files) for _, _, files in os.walk(mask_dir)])
         if frame_count*object_count != total_masks:
             gr.Warning("Not all frames have masks. Please run \"Track Objects\".")
-            return ("Not all frames have masks. Please run \"Track Objects\".", None)
-
+            return ("Not all frames have masks. Please run \"Track Objects\".", gr.DownloadButton(visible=False))
+        
     images = []
     masks = []
     for frame_number in range(frame_count):
@@ -1338,7 +1351,7 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
         else:
             stream.width = width
         if height%2 == 1:
-            stream.height = height = 1
+            stream.height = height + 1
         else: 
             stream.height = height
 
@@ -1369,20 +1382,34 @@ def export_video(fps, type, content, object, progress=gr.Progress()):
                     mask = current_mask
                 else:
                     mask = cv2.bitwise_or(mask, current_mask)
+
+            # If no masks were found for this frame, create a blank mask
+            if mask is None:
+                height, width = cv2.imread(frame_path).shape[:2]
+                mask = np.zeros((height, width), dtype=np.uint8)
+                
             mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
         else:
-            mask_filename = os.path.join(mask_dir, f"{frame_number:04d}", f"{object}.png")
+            if content == "Matting":
+                mask_filename = os.path.join(matting_dir, f"{frame_number:04d}", f"{object}.png")
+            else:
+                mask_filename = os.path.join(mask_dir, f"{frame_number:04d}", f"{object}.png")
             mask = cv2.imread(mask_filename, cv2.IMREAD_GRAYSCALE)
-            if content != "Matting":
-                _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-                mask = fill_small_holes(mask)
-                mask = remove_small_dots(mask)
-                mask = grow_shrink(mask)
-                mask = border_fix(mask)
-            elif content == "Matting":
-                mask = gamma(mask)
-                mask = grow_shrink_matte(mask)
-            mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+            if mask is not None:
+                if content != "Matting":
+                    _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+                    mask = fill_small_holes(mask)
+                    mask = remove_small_dots(mask)
+                    mask = grow_shrink(mask)
+                    mask = border_fix(mask)
+                elif content == "Matting":
+                    mask = gamma(mask)
+                    mask = grow_shrink_matte(mask)
+                mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+            else:
+                # If mask was not found for this frame, create a blank mask
+                height, width = cv2.imread(frame_path).shape[:2]
+                mask = np.zeros((height, width, 3), dtype=np.uint8)
         if content == "Segmentation with Edge Smoothing":
             mask = run_smoothing_model(mask, smoothing_model, device)
         if type=="Alpha": 
