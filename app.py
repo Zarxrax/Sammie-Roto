@@ -11,6 +11,8 @@ import re
 import requests
 import threading
 import zipfile
+import argparse
+from types import SimpleNamespace
 from packaging import version
 from collections import namedtuple
 from fractions import Fraction
@@ -21,10 +23,21 @@ from matanyone.inference.inference_core import InferenceCore
 from matanyone.utils.get_default_model import get_matanyone_model
 from sammie.duplicate_frame_handler import replace_similar_matte_frames
 
+
+# --- CLI args ---
+parser = argparse.ArgumentParser(description="Sammie-Roto")
+parser.add_argument("-i", "--input", help="Path to a video/image to load on start")
+parser.add_argument("--no-browser", action="store_true", help="Do not open browser window automatically")
+# parse_known_args to avoid conflicts with internal Gradio/PyTorch args
+_cli_args, _ = parser.parse_known_args()
+CLI_VIDEO_PATH = _cli_args.input
+CLI_OPEN_BROWSER = not _cli_args.no_browser
+
+
 # .........................................................................................
 # Global variables
 # .........................................................................................
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 temp_dir = "temp"
 frames_dir = os.path.join(temp_dir, "frames")
 mask_dir = os.path.join(temp_dir, "masks")
@@ -1675,8 +1688,12 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     dedupe_min_threshold = settings.get("dedupe_min_threshold")
     save_settings() # save settings in case defaults have not been saved yet
 
-    # resume previous session
-    if os.path.exists(temp_dir):
+    # If a CLI input is provided, clear previous temp data to avoid resuming old session
+    if CLI_VIDEO_PATH and os.path.exists(temp_dir):
+        shutil.rmtree(temp_dir)
+
+    # resume previous session (skip if CLI input was provided)
+    if not CLI_VIDEO_PATH and os.path.exists(temp_dir):
         json_filename = os.path.join(temp_dir, "points.json")
         if os.path.exists(json_filename):
             with open(json_filename, 'r') as f:
@@ -1697,14 +1714,6 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             file_count="multiple",  # Allow multiple files
             interactive=True
         )
-        
-        gr.Markdown("""
-        **Supported inputs:**
-        - **Video file** → Process as video
-        - **Single image** → Process as 1 frame
-        - **Multiple images** → Process as sequence
-        - Select multiple with Ctrl/Cmd+Click
-        """)
         
         gr.Markdown("### Settings")
         model_dropdown = gr.Dropdown(
@@ -1734,6 +1743,9 @@ with gr.Blocks(title='Sammie-Roto') as demo:
             value=os.path.join(temp_dir, "points.json"), 
             interactive=True
         )
+    # State with initial file from CLI (if provided)
+    cli_file_state = gr.State(SimpleNamespace(name=CLI_VIDEO_PATH) if CLI_VIDEO_PATH else None)
+
 
     with gr.Tab("Segmentation") as segmentation_tab:
         with gr.Accordion(label="Instructions (Click to expand/collapse)", open=False):
@@ -1925,8 +1937,29 @@ with gr.Blocks(title='Sammie-Roto') as demo:
     name_date_time_checkbox.change(update_name_date_time, inputs=name_date_time_checkbox, outputs=preview_filename)
 
     # when the app loads, update the image
-    demo.load(fn=update_image, inputs=frame_slider, outputs=image_viewer)
+    
+    if CLI_VIDEO_PATH:
+        # Autoload file on startup: mimic the same chain as manual upload
+        demo.load(
+        fn=process_and_enable_slider,
+        inputs=cli_file_state,
+        outputs=[frame_slider, frame_slider_mat, export_fps]
+        ).then(
+        clear_all_points, outputs=point_viewer
+        ).then(
+        update_image, inputs=frame_slider, outputs=image_viewer
+        ).then(
+        reset_postprocessing,
+        outputs=[post_holes_slider, post_dots_slider, post_grow_slider, post_border_slider, show_outlines_checkbox, post_gamma_slider, post_grow_matte_slider]
+        ).then(
+        lambda: "All", outputs=export_object
+        ).then(
+        lambda: build_video_filename(), outputs=preview_filename
+        )
+    else:
+        demo.load(fn=update_image, inputs=frame_slider, outputs=image_viewer)
+
 
 # Launch the Gradio app
 if __name__ == "__main__":
-    demo.launch(show_error=True, inbrowser=True, show_api=False, debug=False)
+    demo.launch(show_error=True, inbrowser=CLI_OPEN_BROWSER, show_api=False, debug=False)
