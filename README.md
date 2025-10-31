@@ -6,7 +6,10 @@
 
 Sammie-Roto is designed to be a user-friendly tool for AI assisted masking of video clips. It serves as a free alternative to commercial solutions such as Adobe’s Roto Brush or DaVinci Resolve's Magic Mask. It is generally less accurate than manual rotoscoping, but can usually give a pretty good result with little effort.
 
+## Check out the new [Sammie-Roto 2](https://github.com/Zarxrax/Sammie-Roto-2)!
+
 ### Updates
+- [10/31/2025] [Sammie-Roto 2](https://github.com/Zarxrax/Sammie-Roto-2) is now out! All future updates will be on that version.
 - [09/22/2025] Added PNG Export, import image sequences, fixed bugs in matting export, and load videos via CLI.
 - [08/23/2025] Added options on the export tab to put various information into the filename.
 - [08/16/2025] Added border fix slider to help fix masks around the edge of the frame. Reduced VRAM used during matting.
